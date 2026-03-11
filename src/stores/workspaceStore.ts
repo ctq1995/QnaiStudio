@@ -5,37 +5,62 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Workspace, WorkspaceStore } from '../types';
+import { useConfigStore } from './configStore';
 import * as tauri from '../services/tauri';
+import {
+  getAccessibleWorkspacesByScope,
+  getContextWorkspacesByScope,
+  getCurrentWorkspaceById,
+  sanitizeContextWorkspaceIds,
+} from '../utils/workspaceScope';
+
+function findWorkspaceById(workspaces: Workspace[], id: string): Workspace {
+  const workspace = workspaces.find((item) => item.id === id);
+  if (!workspace) {
+    throw new Error('工作区不存在');
+  }
+
+  return workspace;
+}
+
+function touchWorkspace(workspaces: Workspace[], id: string): Workspace[] {
+  const timestamp = new Date().toISOString();
+
+  return workspaces.map((workspace) => (
+    workspace.id === id ? { ...workspace, lastAccessed: timestamp } : workspace
+  ));
+}
+
+function syncConfigWorkDir(path: string) {
+  useConfigStore.setState((state) => ({
+    config: state.config ? { ...state.config, workDir: path } : state.config,
+  }));
+}
 
 export const useWorkspaceStore = create<WorkspaceStore>()(
   persist(
     (set, get) => ({
-      // 初始状态
       workspaces: [],
       currentWorkspaceId: null,
       contextWorkspaceIds: [],
-      viewingWorkspaceId: null,  // 不持久化
+      viewingWorkspaceId: null,
       isLoading: false,
       error: null,
 
-      // 创建工作区
       createWorkspace: async (name: string, path: string) => {
         set({ isLoading: true, error: null });
-        
+
         try {
-          // 验证路径
           const isValid = await get().validateWorkspacePath(path);
           if (!isValid) {
             throw new Error('无效的工作区路径');
           }
 
-          // 检查路径是否已存在
-          const existingWorkspace = get().workspaces.find(w => w.path === path);
+          const existingWorkspace = get().workspaces.find((workspace) => workspace.path === path);
           if (existingWorkspace) {
             throw new Error('该路径已被其他工作区使用');
           }
 
-          // 创建工作区
           const workspace: Workspace = {
             id: crypto.randomUUID(),
             name,
@@ -44,14 +69,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
             lastAccessed: new Date().toISOString(),
           };
 
-          // 更新状态
           set((state) => ({
             workspaces: [...state.workspaces, workspace],
             currentWorkspaceId: workspace.id,
             isLoading: false,
           }));
 
-          // 切换到新工作区
           await get().switchWorkspace(workspace.id);
         } catch (error) {
           set({
@@ -62,15 +85,9 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         }
       },
 
-      // 切换工作区
       switchWorkspace: async (id: string) => {
-        const workspace = get().workspaces.find(w => w.id === id);
-        if (!workspace) {
-          throw new Error('工作区不存在');
-        }
+        const workspace = findWorkspaceById(get().workspaces, id);
 
-        // 先更新全局配置的工作目录，成功后才更新前端状态
-        // 这样确保前端显示的工作区与后端配置始终一致
         try {
           await tauri.setWorkDir(workspace.path);
         } catch (error) {
@@ -78,79 +95,60 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           throw new Error(`切换工作区失败: ${error instanceof Error ? error.message : '未知错误'}`);
         }
 
-        // 后端配置更新成功后，更新前端状态
         set((state) => ({
-          workspaces: state.workspaces.map(w =>
-            w.id === id
-              ? { ...w, lastAccessed: new Date().toISOString() }
-              : w
-          ),
+          workspaces: touchWorkspace(state.workspaces, id),
           currentWorkspaceId: id,
+          contextWorkspaceIds: sanitizeContextWorkspaceIds(state.contextWorkspaceIds, id),
         }));
 
-        // 通知其他组件工作区已切换
+        syncConfigWorkDir(workspace.path);
+
         window.dispatchEvent(new CustomEvent('workspace-changed', {
-          detail: { workspaceId: id, path: workspace.path }
+          detail: { workspaceId: id, path: workspace.path },
         }));
-
-        // 切换工作区成功后，清除聊天错误提示
         window.dispatchEvent(new CustomEvent('workspace-switched'));
       },
 
-      // 删除工作区
       deleteWorkspace: async (id: string) => {
         const { workspaces, currentWorkspaceId, contextWorkspaceIds } = get();
-
         if (workspaces.length <= 1) {
           throw new Error('至少需要保留一个工作区');
         }
 
-        const workspaceToDelete = workspaces.find(w => w.id === id);
-        if (!workspaceToDelete) {
-          throw new Error('工作区不存在');
-        }
+        findWorkspaceById(workspaces, id);
 
-        const newWorkspaces = workspaces.filter(w => w.id !== id);
-        const newCurrentId = currentWorkspaceId === id
-          ? newWorkspaces[0]?.id || null
+        const nextWorkspaces = workspaces.filter((workspace) => workspace.id !== id);
+        const nextCurrentWorkspaceId = currentWorkspaceId === id
+          ? nextWorkspaces[0]?.id || null
           : currentWorkspaceId;
+        const nextContextIds = contextWorkspaceIds.filter((contextId) => contextId !== id);
 
-        // 同时从上下文中移除被删除的工作区
-        const newContextIds = contextWorkspaceIds.filter(contextId => contextId !== id);
-
-        // 先更新工作区列表（移除要删除的）
         set({
-          workspaces: newWorkspaces,
-          contextWorkspaceIds: newContextIds,
+          workspaces: nextWorkspaces,
+          contextWorkspaceIds: sanitizeContextWorkspaceIds(nextContextIds, nextCurrentWorkspaceId),
         });
 
-        // 如果删除的是当前工作区，需要切换到剩余的工作区
-        if (currentWorkspaceId === id && newCurrentId) {
-          // 使用 switchWorkspace 确保后端配置同步更新
-          // switchWorkspace 会更新 currentWorkspaceId 并同步到后端
-          await get().switchWorkspace(newCurrentId);
-        } else {
-          // 删除的不是当前工作区，只需更新 currentWorkspaceId
-          set({ currentWorkspaceId: newCurrentId });
+        if (currentWorkspaceId === id && nextCurrentWorkspaceId) {
+          await get().switchWorkspace(nextCurrentWorkspaceId);
+          return;
         }
+
+        set({ currentWorkspaceId: nextCurrentWorkspaceId });
       },
 
-      // 更新工作区
       updateWorkspace: async (id: string, updates: Partial<Workspace>) => {
         set((state) => ({
-          workspaces: state.workspaces.map(w =>
-            w.id === id ? { ...w, ...updates } : w
-          ),
+          workspaces: state.workspaces.map((workspace) => (
+            workspace.id === id ? { ...workspace, ...updates } : workspace
+          )),
         }));
       },
 
-      // 获取当前工作区
       getCurrentWorkspace: () => {
         const { workspaces, currentWorkspaceId } = get();
-        return workspaces.find(w => w.id === currentWorkspaceId) || null;
+        return getCurrentWorkspaceById(workspaces, currentWorkspaceId);
       },
 
-      // 验证工作区路径
       validateWorkspacePath: async (path: string): Promise<boolean> => {
         try {
           return await tauri.validateWorkspacePath(path);
@@ -159,80 +157,79 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         }
       },
 
-      // 清除错误
       clearError: () => {
         set({ error: null });
       },
 
-      // ========== 关联工作区操作 ==========
-
-      // 设置关联工作区列表
       setContextWorkspaces: (ids: string[]) => {
-        set({ contextWorkspaceIds: ids });
+        set((state) => ({
+          contextWorkspaceIds: sanitizeContextWorkspaceIds(ids, state.currentWorkspaceId),
+        }));
       },
 
-      // 添加到关联
       addContextWorkspace: (id: string) => {
-        set(state => {
-          // 不能重复添加
-          if (state.contextWorkspaceIds.includes(id)) return state;
+        set((state) => {
+          if (id === state.currentWorkspaceId || state.contextWorkspaceIds.includes(id)) {
+            return state;
+          }
+
           return { contextWorkspaceIds: [...state.contextWorkspaceIds, id] };
         });
       },
 
-      // 从关联移除
       removeContextWorkspace: (id: string) => {
-        set(state => ({
-          contextWorkspaceIds: state.contextWorkspaceIds.filter(x => x !== id)
+        set((state) => ({
+          contextWorkspaceIds: state.contextWorkspaceIds.filter((workspaceId) => workspaceId !== id),
         }));
       },
 
-      // 切换关联状态
       toggleContextWorkspace: (id: string) => {
         const state = get();
+        if (id === state.currentWorkspaceId) {
+          return;
+        }
 
         if (state.contextWorkspaceIds.includes(id)) {
           get().removeContextWorkspace(id);
-        } else {
-          get().addContextWorkspace(id);
+          return;
         }
+
+        get().addContextWorkspace(id);
       },
 
-      // 清空关联
       clearContextWorkspaces: () => {
         set({ contextWorkspaceIds: [] });
       },
 
-      // 获取关联工作区列表
       getContextWorkspaces: () => {
         const state = get();
-        return state.workspaces.filter(w => state.contextWorkspaceIds.includes(w.id));
-      },
-
-      // 获取所有可访问的工作区（当前 + 关联）
-      getAllAccessibleWorkspaces: () => {
-        const state = get();
-        const contextIds = new Set(state.contextWorkspaceIds);
-        return state.workspaces.filter(w =>
-          w.id === state.currentWorkspaceId || contextIds.has(w.id)
+        return getContextWorkspacesByScope(
+          state.workspaces,
+          state.currentWorkspaceId,
+          state.contextWorkspaceIds,
         );
       },
 
-      // ========== FileExplorer 浏览工作区操作 ==========
+      getAllAccessibleWorkspaces: () => {
+        const state = get();
+        return getAccessibleWorkspacesByScope(
+          state.workspaces,
+          state.currentWorkspaceId,
+          state.contextWorkspaceIds,
+        );
+      },
 
-      // 设置 FileExplorer 当前浏览的工作区
       setViewingWorkspace: (id: string | null) => {
         set({ viewingWorkspaceId: id });
       },
 
-      // 获取 FileExplorer 当前浏览的工作区
       getViewingWorkspace: () => {
         const state = get();
-        // 如果没有设置浏览工作区，返回当前工作区
         if (!state.viewingWorkspaceId) {
-          return state.workspaces.find(w => w.id === state.currentWorkspaceId) || null;
+          return getCurrentWorkspaceById(state.workspaces, state.currentWorkspaceId);
         }
-        return state.workspaces.find(w => w.id === state.viewingWorkspaceId) || null;
+
+        return state.workspaces.find((workspace) => workspace.id === state.viewingWorkspaceId) || null;
       },
     }),
     {
@@ -242,6 +239,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         currentWorkspaceId: state.currentWorkspaceId,
         contextWorkspaceIds: state.contextWorkspaceIds,
       }),
-    }
-  )
+    },
+  ),
 );

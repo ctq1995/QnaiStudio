@@ -212,11 +212,12 @@ export class IFlowEventParser extends BaseEventParser<IFlowStreamEvent> {
       this.toolCallManager.startToolCall(toolName, toolId, args)
 
       results.push(createProgressEvent(`调用工具: ${toolName}`))
-      results.push(createToolCallStartEvent(toolName, args))
+      results.push(createToolCallStartEvent(toolName, args, toolId))
     } else if (event.status === 'end') {
       // 工具调用完成 - 更新 ToolCallManager 状态
       const toolCalls = this.toolCallManager.getToolCalls()
       const matchingTool = toolCalls.find(tc => tc.name === toolName && tc.status === 'running')
+      const toolId = event.tool_id || matchingTool?.id
 
       if (matchingTool) {
         this.toolCallManager.endToolCall(matchingTool.id, event.result || event.output, true)
@@ -224,12 +225,13 @@ export class IFlowEventParser extends BaseEventParser<IFlowStreamEvent> {
 
       results.push(createProgressEvent(`工具完成: ${toolName}`))
       results.push(
-        createToolCallEndEvent(toolName, event.result || event.output, true)
+        createToolCallEndEvent(toolName, event.result || event.output, true, toolId)
       )
     } else if (event.status === 'error') {
       // 工具调用失败 - 更新 ToolCallManager 状态
       const toolCalls = this.toolCallManager.getToolCalls()
       const matchingTool = toolCalls.find(tc => tc.name === toolName && tc.status === 'running')
+      const toolId = event.tool_id || matchingTool?.id
 
       if (matchingTool) {
         this.toolCallManager.endToolCall(matchingTool.id, event.result || event.output, false)
@@ -237,7 +239,7 @@ export class IFlowEventParser extends BaseEventParser<IFlowStreamEvent> {
 
       results.push(createProgressEvent(`工具失败: ${toolName}`))
       results.push(
-        createToolCallEndEvent(toolName, event.result || event.output, false)
+        createToolCallEndEvent(toolName, event.result || event.output, false, toolId)
       )
     }
 

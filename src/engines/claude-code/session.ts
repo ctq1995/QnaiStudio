@@ -69,6 +69,7 @@ export class ClaudeCodeSession extends BaseSession {
   protected config: ClaudeSessionConfig
   private parser: ClaudeEventParser
   private currentTaskId: string | null = null
+  private backendSessionId: string | null = null
   private unlistenChatEvent: (() => void) | null = null
 
   constructor(id: string, config?: ClaudeSessionConfig) {
@@ -111,7 +112,7 @@ export class ClaudeCodeSession extends BaseSession {
     }
 
     // 调用 Tauri 后端中断 CLI 进程
-    invoke('interrupt_chat', { sessionId: this.id })
+    invoke('interrupt_chat', { payload: { sessionId: this.backendSessionId ?? this.id } })
       .catch((error) => {
         console.error('[ClaudeCodeSession] Failed to abort:', error)
       })
@@ -144,12 +145,20 @@ export class ClaudeCodeSession extends BaseSession {
     }
 
     try {
-      this.unlistenChatEvent = await listen<TauriChatEvent>(
+      this.unlistenChatEvent = await listen<unknown>(
         'chat-event',
         (event) => {
-          // 过滤属于当前会话的事件
-          if (event.payload.session_id === this.id) {
-            this.handleTauriEvent(event.payload)
+          const payload = parseTauriChatEvent(event.payload)
+          if (!payload) {
+            return
+          }
+          // ?????????????????
+          const payloadSessionId = payload.session_id
+          if (payloadSessionId && !this.backendSessionId) {
+            this.backendSessionId = payloadSessionId
+          }
+          if (!payloadSessionId || payloadSessionId === this.id || payloadSessionId === this.backendSessionId) {
+            this.handleTauriEvent(payload)
           }
         }
       )
@@ -167,14 +176,14 @@ export class ClaudeCodeSession extends BaseSession {
 
     const args = {
       message,
-      sessionId: this.id,
-      workspaceDir: this.config.workspaceDir,
-      verbose: this.config.verbose || false,
+      sessionId: this.backendSessionId ?? this.id,
+      workDir: this.config.workspaceDir,
+      engineId: 'claude-code',
       // 不需要传递 claudePath，后端会从配置中读取
     }
 
     try {
-      await invoke('start_chat', args)
+      await invoke('start_chat', { payload: args })
     } catch (error) {
       console.error('[ClaudeCodeSession] Failed to start Claude process:', error)
       throw error
@@ -263,8 +272,11 @@ export class ClaudeCodeSession extends BaseSession {
 
     try {
       await invoke('continue_chat', {
-        sessionId: this.id,
-        message: prompt,
+        payload: {
+          sessionId: this.backendSessionId ?? this.id,
+          message: prompt,
+          engineId: 'claude-code',
+        },
       })
       this._status = 'running'
     } catch (error) {
@@ -282,4 +294,21 @@ export function createClaudeSession(
   config?: ClaudeSessionConfig
 ): ClaudeCodeSession {
   return new ClaudeCodeSession(sessionId, config)
+}
+
+function parseTauriChatEvent(payload: unknown): TauriChatEvent | null {
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload) as TauriChatEvent
+    } catch (error) {
+      console.error('[ClaudeCodeSession] Failed to parse payload string:', error)
+      return null
+    }
+  }
+
+  if (payload && typeof payload === 'object') {
+    return payload as TauriChatEvent
+  }
+
+  return null
 }

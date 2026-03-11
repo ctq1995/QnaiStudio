@@ -12,9 +12,10 @@ export function useChatEvent(
   onError?: (error: string) => void
 ) {
   useEffect(() => {
-    const unlistenPromise = listen<string>('chat-event', (event) => {
+    const unlistenPromise = listen<unknown>('chat-event', (event) => {
       try {
-        const data = JSON.parse(event.payload) as StreamEvent;
+        const payload = event.payload;
+        const data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as StreamEvent;
         onEvent(data);
       } catch (e) {
         console.error('Failed to parse chat event:', e);

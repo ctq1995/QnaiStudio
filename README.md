@@ -1,24 +1,23 @@
-# Polaris
+﻿# QnAI Studio
 
-> 多AI引擎支持的智能编程助手
+> 多引擎 CLI 智能编程工作台
 
 ## 简介
 
-[Claude Code](https://claude.ai/code) 是 Anthropic 官方推出的 AI 辅助编程命令行工具。**Polaris** 是一个支持多种 AI 引擎的智能编程助手，提供了更友好的图形界面，让你无需命令行也能享受 AI 带来的编程体验。
+QnAI Studio 是基于 Polaris 二次开发的桌面端 AI 编程工作台，支持 Claude Code / Codex CLI / Gemini CLI / IFlow 等多引擎，提供统一的对话、文件浏览与代码编辑体验。
 
-### 核心功能
+## 功能亮点
 
-- **AI 对话** - 与 Claude AI 实时对话，支持流式响应
-- **工作区管理** - 创建和切换多个代码工作区
-- **文件浏览** - 可视化文件树，快速定位文件
-- **代码编辑** - 内置 CodeMirror 6 编辑器，支持多语言语法高亮
-- **工具调用可视化** - 实时展示 AI 调用的工具和操作
-- **文件搜索** - 快速搜索工作区内的文件
+- 多引擎对话与快速切换
+- 会话历史与工具调用可视化
+- 文件浏览与工作区管理
+- 内置代码编辑器（CodeMirror 6）
+- 悬浮窗模式与界面主题切换
 
 ## 技术栈
 
 | 层级 | 技术 |
-|------|------|
+| --- | --- |
 | 前端 | React 19 + TypeScript + Vite |
 | 样式 | Tailwind CSS |
 | 状态管理 | Zustand |
@@ -27,25 +26,25 @@
 
 ## 环境要求
 
-- **Node.js** >= 18
-- **Rust** >= 1.70
-- **Claude Code CLI** - 需要在设置中配置路径
+- Node.js >= 18
+- Rust >= 1.70
+- 相关引擎 CLI（按需配置）
 
-## 快速开始
+## 开发与运行
 
-### 1. 安装依赖
+### 安装依赖
 
 ```bash
 npm install
 ```
 
-### 2. 启动开发模式
+### 开发模式
 
 ```bash
 npm run tauri dev
 ```
 
-### 3. 构建
+### 构建
 
 ```bash
 # 构建前端
@@ -55,45 +54,21 @@ npm run build
 npm run tauri build
 ```
 
-### 4. 其他命令
+### 其他脚本
 
 ```bash
 npm run dev          # 仅启动前端开发服务器
 npm run preview      # 预览生产构建
 ```
 
-## 项目结构
+## 鸣谢
 
-```
-src/
-├── components/          # React 组件
-│   ├── Chat/           # AI 对话相关
-│   ├── Editor/         # 代码编辑器
-│   ├── FileExplorer/   # 文件浏览器
-│   ├── ToolPanel/      # 工具调用面板
-│   ├── Workspace/      # 工作区管理
-│   ├── Settings/       # 设置页面
-│   └── Common/         # 通用组件
-├── hooks/              # 自定义 Hooks
-├── stores/             # Zustand 状态管理
-├── services/           # Tauri API 封装
-├── types/              # TypeScript 类型定义
-├── utils/              # 工具函数
-├── App.tsx             # 主应用
-└── main.tsx            # 入口文件
-```
+- 原项目 Polaris：https://github.com/misxzaiz/Polaris
 
-## 推荐 IDE
-
-[VS Code](https://code.visualstudio.com/) + 以下扩展：
-
-- [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
-- [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
-
-## 许可证
+## 许可
 
 MIT
 
 ---
 
-> 注意：本项目是非官方的第三方客户端，与 Anthropic 无关。使用前请确保已安装并配置 Claude Code CLI。
+> 说明：本项目为社区二次开发版本，非官方客户端。

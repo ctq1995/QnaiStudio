@@ -1,16 +1,16 @@
-/**
- * 聊天输入组件 - 支持斜杠命令、工作区引用、文件引用和 Git 上下文
+﻿/**
+ * 鑱婂ぉ杈撳叆缁勪欢 - 鏀寔鏂滄潬鍛戒护銆佸伐浣滃尯寮曠敤銆佹枃浠跺紩鐢ㄥ拰 Git 涓婁笅鏂?
  *
- * 支持的语法：
- * - /command          斜杠命令
- * - @workspace/path   引用指定工作区的文件
- * - @/path            引用当前工作区的文件
- * - @git              Git 上下文（diff, commit, log 等）
+ * 鏀寔鐨勮娉曪細
+ * - /command          鏂滄潬鍛戒护
+ * - @workspace/path   寮曠敤鎸囧畾宸ヤ綔鍖虹殑鏂囦欢
+ * - @/path            寮曠敤褰撳墠宸ヤ綔鍖虹殑鏂囦欢
+ * - @git              Git 涓婁笅鏂囷紙diff, commit, log 绛夛級
  *
- * 新增功能：
- * - 上下文芯片可视化显示
- * - Git 提交选择
- * - 空间优化的紧凑布局
+ * 鏂板鍔熻兘锛?
+ * - 涓婁笅鏂囪姱鐗囧彲瑙嗗寲鏄剧ず
+ * - Git 鎻愪氦閫夋嫨
+ * - 绌洪棿浼樺寲鐨勭揣鍑戝竷灞€
  */
 
 import { useState, useRef, KeyboardEvent, useEffect, useCallback, useMemo } from 'react';
@@ -28,6 +28,7 @@ import { addChipId } from '../../types/context';
 import { AutoResizingTextarea } from './AutoResizingTextarea';
 import { useFileSearch } from '../../hooks/useFileSearch';
 import { getGitCommits } from '../../services/gitContextService';
+import { getAccessibleWorkspacesByScope } from '../../utils/workspaceScope';
 
 interface ChatInputProps {
   onSend: (message: string, workspaceDir?: string) => void;
@@ -50,28 +51,28 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 上下文芯片状态
+  // 涓婁笅鏂囪姱鐗囩姸鎬?
   const [contextChips, setContextChips] = useState<ContextChipWithId[]>([]);
 
-  // 命令建议状态
+  // 鍛戒护寤鸿鐘舵€?
   const [showCommandSuggestions, setShowCommandSuggestions] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [commandPosition, setCommandPosition] = useState({ top: 0, left: 0 });
 
-  // 工作区建议状态
+  // 宸ヤ綔鍖哄缓璁姸鎬?
   const [showWorkspaceSuggestions, setShowWorkspaceSuggestions] = useState(false);
   const [selectedWorkspaceIndex, setSelectedWorkspaceIndex] = useState(0);
   const [workspaceQuery, setWorkspaceQuery] = useState('');
   const [workspacePosition, setWorkspacePosition] = useState({ top: 0, left: 0 });
 
-  // 文件建议状态
+  // 鏂囦欢寤鸿鐘舵€?
   const [showFileSuggestions, setShowFileSuggestions] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [filePosition, setFilePosition] = useState({ top: 0, left: 0 });
   const [fileWorkspace, setFileWorkspace] = useState<Workspace | null>(null);
 
-  // Git 建议状态
+  // Git 寤鸿鐘舵€?
   const [showGitSuggestions, setShowGitSuggestions] = useState(false);
   const [gitMode, setGitMode] = useState<'root' | 'commit'>('root');
   const [gitQuery, setGitQuery] = useState('');
@@ -81,24 +82,30 @@ export function ChatInput({
   const [isGitLoading, setIsGitLoading] = useState(false);
 
   const { getCommands, searchCommands } = useCommandStore();
-  const { currentWorkspaceId, workspaces } = useWorkspaceStore();
+  const workspaces = useWorkspaceStore((state) => state.workspaces);
+  const currentWorkspaceId = useWorkspaceStore((state) => state.currentWorkspaceId);
+  const contextWorkspaceIds = useWorkspaceStore((state) => state.contextWorkspaceIds);
+  const accessibleWorkspaces = useMemo(
+    () => getAccessibleWorkspacesByScope(workspaces, currentWorkspaceId, contextWorkspaceIds),
+    [contextWorkspaceIds, currentWorkspaceId, workspaces],
+  );
   const { fileMatches, searchFiles, clearResults } = useFileSearch();
 
-  // 缓存命令搜索结果
+  // 缂撳瓨鍛戒护鎼滅储缁撴灉
   const suggestedCommands = useMemo(
     () => searchCommands(commandQuery),
     [commandQuery, searchCommands]
   );
 
-  // 过滤工作区列表
+  // 杩囨护宸ヤ綔鍖哄垪琛?
   const filteredWorkspaces = useMemo(
-    () => workspaces.filter(w =>
+    () => accessibleWorkspaces.filter(w =>
       w.name.toLowerCase().includes(workspaceQuery.toLowerCase())
     ),
-    [workspaces, workspaceQuery]
+    [accessibleWorkspaces, workspaceQuery]
   );
 
-  // Git 建议项
+  // Git 寤鸿椤?
   const gitSuggestions = useMemo(() => {
     if (gitMode === 'root') {
       return getGitRootSuggestions();
@@ -109,7 +116,7 @@ export function ChatInput({
     return gitCommits.length > 0 ? commitsToSuggestionItems(gitCommits) : [];
   }, [gitMode, gitQuery, gitCommits]);
 
-  // 当前建议模式
+  // 褰撳墠寤鸿妯″紡
   const suggestionMode: SuggestionMode = useMemo(() => {
     if (showCommandSuggestions) return 'command';
     if (showWorkspaceSuggestions) return 'workspace';
@@ -118,7 +125,7 @@ export function ChatInput({
     return null;
   }, [showCommandSuggestions, showWorkspaceSuggestions, showFileSuggestions, showGitSuggestions]);
 
-  // 智能定位建议框
+  // 鏅鸿兘瀹氫綅寤鸿妗?
   const calculateSuggestionPosition = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return { top: 0, left: 0, shouldShowAbove: false };
@@ -135,7 +142,7 @@ export function ChatInput({
     };
   }, []);
 
-  // 检测触发符
+  // 妫€娴嬭Е鍙戠
   const handleInputChange = useCallback(async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
     setValue(newValue);
@@ -146,7 +153,7 @@ export function ChatInput({
     const cursorPosition = textarea.selectionStart;
     const textBeforeCursor = newValue.slice(0, cursorPosition);
 
-    // 1. 检测 Git 上下文引用 (@git)
+    // 1. 妫€娴?Git 涓婁笅鏂囧紩鐢?(@git)
     const gitMatch = textBeforeCursor.match(/@git(?::(\w*))?(?:\s([^\s]*))?$/);
     if (gitMatch) {
       const gitAction = gitMatch[1] || '';
@@ -163,7 +170,7 @@ export function ChatInput({
         setGitQuery(query);
         setSelectedGitIndex(0);
 
-        // 加载提交列表（如果还没加载或查询变化）
+        // 鍔犺浇鎻愪氦鍒楄〃锛堝鏋滆繕娌″姞杞芥垨鏌ヨ鍙樺寲锛?
         if (currentWorkDir && gitCommits.length === 0) {
           setIsGitLoading(true);
           try {
@@ -184,14 +191,14 @@ export function ChatInput({
       return;
     }
 
-    // 2. 检测跨工作区引用 (@workspace:path)
+    // 2. 妫€娴嬭法宸ヤ綔鍖哄紩鐢?(@workspace:path)
     const workspaceMatch = textBeforeCursor.match(/@([\w\u4e00-\u9fa5-]+):([^\s]*)$/);
     if (workspaceMatch) {
       const workspaceName = workspaceMatch[1];
       const pathPart = workspaceMatch[2] || '';
 
-      const matchedWorkspace = workspaces.find(w =>
-        w.name.toLowerCase() === workspaceName.toLowerCase()
+      const matchedWorkspace = accessibleWorkspaces.find((workspace) =>
+        workspace.name.toLowerCase() === workspaceName.toLowerCase()
       );
 
       if (matchedWorkspace) {
@@ -216,7 +223,7 @@ export function ChatInput({
       return;
     }
 
-    // 3. 检测用户正在输入工作区名
+    // 3. 妫€娴嬬敤鎴锋鍦ㄨ緭鍏ュ伐浣滃尯鍚?
     const partialWorkspaceMatch = textBeforeCursor.match(/@([\w\u4e00-\u9fa5-]*)$/);
     if (partialWorkspaceMatch) {
       const workspaceName = partialWorkspaceMatch[1];
@@ -234,7 +241,7 @@ export function ChatInput({
       }
     }
 
-    // 4. 检测当前工作区文件引用 (@/path)
+    // 4. 妫€娴嬪綋鍓嶅伐浣滃尯鏂囦欢寮曠敤 (@/path)
     const fileMatch = textBeforeCursor.match(/@\/(.*)$/);
     if (fileMatch) {
       setShowWorkspaceSuggestions(false);
@@ -250,7 +257,7 @@ export function ChatInput({
       return;
     }
 
-    // 5. 检测命令触发 (/)
+    // 5. 妫€娴嬪懡浠よЕ鍙?(/)
     const commandMatch = textBeforeCursor.match(/\/([^\s]*)$/);
     if (commandMatch) {
       setCommandQuery(commandMatch[1]);
@@ -265,15 +272,15 @@ export function ChatInput({
       return;
     }
 
-    // 隐藏所有建议
+    // 闅愯棌鎵€鏈夊缓璁?
     setShowCommandSuggestions(false);
     setShowWorkspaceSuggestions(false);
     setShowFileSuggestions(false);
     setShowGitSuggestions(false);
     clearResults();
-  }, [workspaces, searchFiles, clearResults, calculateSuggestionPosition, gitCommits, currentWorkDir]);
+  }, [accessibleWorkspaces, searchFiles, clearResults, calculateSuggestionPosition, gitCommits, currentWorkDir]);
 
-  // 选择命令
+  // 閫夋嫨鍛戒护
   const selectCommand = useCallback((name: string) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -292,7 +299,7 @@ export function ChatInput({
     }, 0);
   }, [value]);
 
-  // 选择工作区
+  // 閫夋嫨宸ヤ綔鍖?
   const selectWorkspace = useCallback((workspace: Workspace) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -314,7 +321,7 @@ export function ChatInput({
     }, 0);
   }, [value]);
 
-  // 选择文件
+  // 閫夋嫨鏂囦欢
   const selectFile = useCallback((file: FileMatch) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -334,7 +341,7 @@ export function ChatInput({
     setValue(newText);
     setShowFileSuggestions(false);
 
-    // 添加文件上下文芯片
+    // 娣诲姞鏂囦欢涓婁笅鏂囪姱鐗?
     const newChip = addChipId({
       type: 'file',
       path: fileWorkspace ? `${fileWorkspace.name}:${file.relativePath}` : file.relativePath,
@@ -349,7 +356,7 @@ export function ChatInput({
     }, 0);
   }, [value, fileWorkspace]);
 
-  // 选择 Git 建议
+  // 閫夋嫨 Git 寤鸿
   const selectGitSuggestion = useCallback((item: GitSuggestionItem) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -381,7 +388,7 @@ export function ChatInput({
     } else if (item.type === 'commit' && item.commit) {
       newText = textBeforeCursor.replace(/@git(?::commit)?\s?[^\s]*$/, `@git:commit:${item.commit.shortHash} `) + textAfterCursor;
 
-      // 添加提交上下文芯片
+      // 娣诲姞鎻愪氦涓婁笅鏂囪姱鐗?
       const newChip = addChipId({
         type: 'commit',
         hash: item.commit.hash,
@@ -402,15 +409,15 @@ export function ChatInput({
     }, 0);
   }, [value]);
 
-  // 移除上下文芯片
+  // 绉婚櫎涓婁笅鏂囪姱鐗?
   const removeContextChip = useCallback((chip: ContextChipWithId) => {
     setContextChips(prev => prev.filter(c => c.id !== chip.id));
   }, []);
 
-  // 键盘事件处理
+  // 閿洏浜嬩欢澶勭悊
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      // 如果建议框打开，选择建议
+      // 濡傛灉寤鸿妗嗘墦寮€锛岄€夋嫨寤鸿
       if (showCommandSuggestions) {
         e.preventDefault();
         if (suggestedCommands.length > 0) {
@@ -443,13 +450,13 @@ export function ChatInput({
         return;
       }
 
-      // 正常发送
+      // 姝ｅ父鍙戦€?
       e.preventDefault();
       handleSend();
       return;
     }
 
-    // 上下箭头选择建议
+    // 涓婁笅绠ご閫夋嫨寤鸿
     if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
         (showCommandSuggestions || showWorkspaceSuggestions || showFileSuggestions || showGitSuggestions)) {
       e.preventDefault();
@@ -485,7 +492,7 @@ export function ChatInput({
       return;
     }
 
-    // ESC 关闭建议
+    // ESC 鍏抽棴寤鸿
     if (e.key === 'Escape') {
       setShowCommandSuggestions(false);
       setShowWorkspaceSuggestions(false);
@@ -495,7 +502,7 @@ export function ChatInput({
       return;
     }
 
-    // Tab 选择建议
+    // Tab 閫夋嫨寤鸿
     if (e.key === 'Tab' && !e.shiftKey) {
       if (showCommandSuggestions) {
         e.preventDefault();
@@ -553,10 +560,10 @@ export function ChatInput({
     const trimmed = value.trim();
     if (!trimmed || disabled || isStreaming) return;
 
-    // 构建包含上下文信息的消息
+    // 鏋勫缓鍖呭惈涓婁笅鏂囦俊鎭殑娑堟伅
     let finalMessage = trimmed;
 
-    // 将上下文芯片信息附加到消息中
+    // 灏嗕笂涓嬫枃鑺墖淇℃伅闄勫姞鍒版秷鎭腑
     if (contextChips.length > 0) {
       const contextInfo = contextChips.map(chip => {
         switch (chip.type) {
@@ -579,7 +586,7 @@ export function ChatInput({
       finalMessage = `${contextInfo}\n\n${trimmed}`;
     }
 
-    // 检查是否是命令
+    // 妫€鏌ユ槸鍚︽槸鍛戒护
     const commands = getCommands();
     const result = parseCommandInput(trimmed, commands);
 
@@ -618,7 +625,7 @@ export function ChatInput({
     clearResults();
   }, [clearResults]);
 
-  // 点击外部关闭建议
+  // 鐐瑰嚮澶栭儴鍏抽棴寤鸿
   useEffect(() => {
     const handleClickOutside = () => {
       setShowCommandSuggestions(false);
@@ -634,17 +641,17 @@ export function ChatInput({
   return (
     <div className="border-t border-border bg-background-elevated" ref={containerRef}>
       <div className="p-3">
-        {/* 上下文芯片栏 */}
+        {/* 涓婁笅鏂囪姱鐗囨爮 */}
         <ContextChips chips={contextChips} onRemove={removeContextChip} />
 
-        {/* 输入框容器 - 紧凑布局 */}
+        {/* 杈撳叆妗嗗鍣?- 绱у噾甯冨眬 */}
         <div className="relative flex items-end gap-2 bg-background-surface border border-border rounded-xl p-2 focus-within:ring-2 focus-within:ring-border focus-within:border-primary transition-all shadow-soft hover:shadow-medium">
           <AutoResizingTextarea
             ref={textareaRef}
             value={value}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="输入消息... (Enter 发送, Shift+Enter 换行, /命令, @工作区:文件, @git)"
+            placeholder="输入消息... (Enter 发送，Shift+Enter 换行，/命令，@工作区:文件，@git)"
             className="flex-1 px-2 py-1.5 bg-transparent text-text-primary placeholder:text-text-tertiary resize-none outline-none text-sm leading-relaxed"
             disabled={disabled}
             maxHeight={180}
@@ -674,7 +681,7 @@ export function ChatInput({
           )}
         </div>
 
-        {/* 紧凑状态栏 - 仅在必要时显示 */}
+        {/* 绱у噾鐘舵€佹爮 - 浠呭湪蹇呰鏃舵樉绀?*/}
         {(isStreaming || suggestionMode || value.length > 0) && (
           <div className="flex items-center justify-between mt-1.5 px-1">
             <div className="text-xs text-text-tertiary">
@@ -702,7 +709,7 @@ export function ChatInput({
         )}
       </div>
 
-      {/* 命令建议 */}
+      {/* 鍛戒护寤鸿 */}
       {showCommandSuggestions && suggestedCommands.length > 0 && (
         <CommandSuggestion
           commands={suggestedCommands.map(c => ({ name: c.name, description: c.description }))}
@@ -713,7 +720,7 @@ export function ChatInput({
         />
       )}
 
-      {/* 工作区建议 */}
+      {/* 宸ヤ綔鍖哄缓璁?*/}
       {showWorkspaceSuggestions && filteredWorkspaces.length > 0 && (
         <WorkspaceSuggestion
           workspaces={filteredWorkspaces}
@@ -725,7 +732,7 @@ export function ChatInput({
         />
       )}
 
-      {/* 文件建议 */}
+      {/* 鏂囦欢寤鸿 */}
       {showFileSuggestions && fileMatches.length > 0 && (
         <FileSuggestion
           files={fileMatches}
@@ -736,7 +743,7 @@ export function ChatInput({
         />
       )}
 
-      {/* Git 建议 */}
+      {/* Git 寤鸿 */}
       {showGitSuggestions && (
         <GitSuggestion
           mode={gitMode}
@@ -752,3 +759,4 @@ export function ChatInput({
     </div>
   );
 }
+

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use tracing::Level;
-use tracing_subscriber::{fmt, prelude::*, Registry};
+use tracing_subscriber::{fmt, prelude::*};
 use tracing_appender::{non_blocking, rolling};
 
 /// 日志服务

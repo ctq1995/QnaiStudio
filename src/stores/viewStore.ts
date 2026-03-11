@@ -16,6 +16,7 @@ interface ViewState {
   editorWidth: number;       // 编辑器宽度百分比（0-100）
   toolPanelWidth: number;    // 工具面板宽度（像素）
   developerPanelWidth: number; // Developer 面板宽度（像素）
+  theme: 'dark' | 'light';   // 主题
 }
 
 /** 视图操作 */
@@ -25,6 +26,7 @@ interface ViewActions {
   toggleToolPanel: () => void;
   toggleDeveloperPanel: () => void;
   toggleSessionHistory: () => void;
+  toggleTheme: () => void;
   setShowEditor: (show: boolean) => void;
   setAIOnlyMode: () => void;
   resetView: () => void;
@@ -50,6 +52,7 @@ export const useViewStore = create<ViewStore>()(
       editorWidth: 50,
       toolPanelWidth: 320,
       developerPanelWidth: 400,
+      theme: 'dark' as const,
 
       // 切换侧边栏
       toggleSidebar: () => set((state) => ({ showSidebar: !state.showSidebar })),
@@ -68,6 +71,13 @@ export const useViewStore = create<ViewStore>()(
 
       // 切换会话历史面板
       toggleSessionHistory: () => set((state) => ({ showSessionHistory: !state.showSessionHistory })),
+
+      // 切换主题
+      toggleTheme: () => set((state) => {
+        const newTheme = state.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', newTheme);
+        return { theme: newTheme };
+      }),
 
       // 仅 AI 对话模式
       setAIOnlyMode: () => set({

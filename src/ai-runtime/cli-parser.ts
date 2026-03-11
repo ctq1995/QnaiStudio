@@ -10,6 +10,7 @@ import {
   createTokenEvent,
   createToolCallStartEvent,
   createToolCallEndEvent,
+  createToolCallOutputEvent,
   createProgressEvent,
   createErrorEvent,
   createSessionStartEvent,
@@ -127,6 +128,10 @@ export class CLIParser {
 
       case 'tool_end':
         results.push(...this.parseToolEndEvent(event))
+        break
+
+      case 'tool_output':
+        results.push(this.parseToolOutputEvent(event))
         break
 
       case 'permission_request':
@@ -306,6 +311,29 @@ export class CLIParser {
     results.push(createToolCallEndEvent(toolName, output, output !== undefined))
 
     return results
+  }
+
+  /**
+   * 解析 Tool Output 事件（工具输出增量）
+   */
+  private parseToolOutputEvent(event: Record<string, unknown>): AIEvent {
+    const toolName =
+      (event.tool_name as string) ||
+      (event.toolName as string) ||
+      (event.tool as string) ||
+      'unknown'
+    const output =
+      (event.output as string) ||
+      (event.result as string) ||
+      ''
+    const callId =
+      (event.toolUseId as string) ||
+      (event.tool_use_id as string) ||
+      (event.tool_id as string) ||
+      (event.callId as string) ||
+      undefined
+
+    return createToolCallOutputEvent(toolName, output, callId)
   }
 
   /**

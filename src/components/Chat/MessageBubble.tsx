@@ -4,11 +4,13 @@
 
 import { memo, useMemo } from 'react';
 import { type Message } from '../../types';
-import { useToolPanelStore } from '../../stores';
+import { useConfigStore, useToolPanelStore } from '../../stores';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import { MermaidDiagram } from './MermaidDiagram';
 import { extractMermaidBlocks } from '../../utils/markdown';
+import { getEngineLabel } from '../../utils/engineLabels';
+import { UserRound } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: Message;
@@ -83,13 +85,16 @@ const ToolSummary = memo(function ToolSummary({ summary }: { summary: NonNullabl
 /** 用户消息组件（独立 memo 化，避免不必要的重渲染） */
 const UserMessage = memo(function UserMessage({ content }: { content: string }) {
   return (
-    <div className="flex justify-end mb-6">
+    <div className="flex justify-end mb-6 gap-2 items-end">
       <div className="max-w-[85%] px-4 py-3 rounded-2xl
                   bg-gradient-to-br from-primary to-primary-600
                   text-white shadow-glow">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">
           {content}
         </div>
+      </div>
+      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0">
+        <UserRound className="w-4 h-4" />
       </div>
     </div>
   );
@@ -109,12 +114,14 @@ const ClaudeMessage = memo(function ClaudeMessage({
   content,
   timestamp,
   isStreaming,
-  toolSummary
+  toolSummary,
+  engineLabel,
 }: {
   content: string;
   timestamp?: string;
   isStreaming?: boolean;
   toolSummary?: Message['toolSummary'];
+  engineLabel: string;
 }) {
   // 分离 Mermaid 代码块和普通 Markdown
   const { cleanedMarkdown, mermaidBlocks } = useMemo(() => extractMermaidBlocks(content), [content]);
@@ -137,7 +144,7 @@ const ClaudeMessage = memo(function ClaudeMessage({
       <div className="flex-1 space-y-1">
         {/* 头部信息 */}
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-text-primary">Claude</span>
+          <span className="text-sm font-medium text-text-primary">{engineLabel}</span>
           {timestamp && (
             <span className="text-xs text-text-tertiary">
               {new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
@@ -203,7 +210,8 @@ const ClaudeMessage = memo(function ClaudeMessage({
   return (
     prevProps.content === nextProps.content &&
     prevProps.isStreaming === nextProps.isStreaming &&
-    prevProps.toolSummary?.count === nextProps.toolSummary?.count
+    prevProps.toolSummary?.count === nextProps.toolSummary?.count &&
+    prevProps.engineLabel === nextProps.engineLabel
   );
 });
 
@@ -211,6 +219,7 @@ const ClaudeMessage = memo(function ClaudeMessage({
 export const MessageBubble = memo(function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const engineLabel = useConfigStore((state) => getEngineLabel(state.config?.defaultEngine));
 
   if (isUser) {
     return <UserMessage content={message.content} />;
@@ -226,6 +235,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isStreaming 
       timestamp={message.timestamp}
       isStreaming={isStreaming}
       toolSummary={message.toolSummary}
+      engineLabel={engineLabel}
     />
   );
 }, (prevProps, nextProps) => {

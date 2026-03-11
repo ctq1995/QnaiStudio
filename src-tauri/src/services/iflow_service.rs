@@ -7,16 +7,14 @@ use crate::models::config::Config;
 use crate::models::events::StreamEvent;
 use crate::models::iflow_events::{
     IFlowJsonlEvent, IFlowSessionMeta, IFlowHistoryMessage, IFlowFileContext,
-    IFlowTokenStats, IFlowToolCall, IFlowProjectsConfig,
+    IFlowTokenStats, IFlowToolCall,
 };
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Child};
-use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Emitter, Window};
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -30,19 +28,12 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub struct IFlowSession {
     pub id: String,
     pub child: Child,
-    pub jsonl_path: PathBuf,
-    pub session_id: String,
 }
 
 impl IFlowSession {
     /// 创建 IFlowSession 实例
-    pub fn new(id: String, child: Child, jsonl_path: PathBuf, session_id: String) -> Self {
-        Self {
-            id,
-            child,
-            jsonl_path,
-            session_id,
-        }
+    pub fn new(id: String, child: Child) -> Self {
+        Self { id, child }
     }
 }
 
@@ -109,42 +100,7 @@ impl IFlowService {
         Ok(projects_dir)
     }
 
-    /// 查找最新的会话文件
-    fn find_latest_session(session_dir: &Path) -> Result<PathBuf> {
-        if !session_dir.exists() {
-            return Err(AppError::ProcessError("会话目录不存在".to_string()));
-        }
-
-        // 读取目录中的所有 .jsonl 文件
-        let entries = std::fs::read_dir(session_dir)
-            .map_err(|e| AppError::ProcessError(format!("读取会话目录失败: {}", e)))?;
-
-        let mut latest_file: Option<PathBuf> = None;
-        let mut latest_time: u64 = 0;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                // 获取文件修改时间
-                let metadata = std::fs::metadata(&path);
-                if let Ok(meta) = metadata {
-                    if let Ok(modified) = meta.modified() {
-                        let modified_secs = modified.duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        if modified_secs > latest_time {
-                            latest_time = modified_secs;
-                            latest_file = Some(path);
-                        }
-                    }
-                }
-            }
-        }
-
-        latest_file.ok_or_else(|| AppError::ProcessError("未找到会话文件".to_string()))
-    }
-
-    /// 启动新的 IFlow 聊天会话
+        /// 启动新的 IFlow 聊天会话
     pub fn start_chat(config: &Config, message: &str) -> Result<IFlowSession> {
         eprintln!("[IFlowService::start_chat] 启动 IFlow 会话");
         eprintln!("[IFlowService::start_chat] 消息内容: {}", message);
@@ -190,12 +146,7 @@ impl IFlowService {
         let temp_id = Uuid::new_v4().to_string();
 
         // 先返回临时实例，稍后会更新 session_id 和 jsonl_path
-        Ok(IFlowSession::new(
-            temp_id,
-            child,
-            PathBuf::new(), // 临时为空，稍后更新
-            String::new(),  // 临时为空，稍后更新
-        ))
+        Ok(IFlowSession::new(temp_id, child))
     }
 
     /// 获取 IFlow CLI 路径
@@ -251,7 +202,7 @@ impl IFlowService {
     /// 3. 检测到 `session_end` 事件时退出
     pub fn monitor_jsonl_file<F>(
         jsonl_path: PathBuf,
-        session_id: String,
+        _session_id: String,
         mut callback: F,
         start_line: usize,
     ) -> std::thread::JoinHandle<()>
@@ -453,9 +404,7 @@ impl IFlowService {
                     // 检查文件内容是否匹配 session_id
                     if let Ok(file) = File::open(&path) {
                         let reader = BufReader::new(file);
-                        let mut line_num = 0;
                         for line in reader.lines().take(10) {
-                            line_num += 1;
                             if let Ok(line_text) = line {
 //                                 eprintln!("[find_session_jsonl] 行{}: {}", line_num, line_text.chars().take(100).collect::<String>());
                                 if let Some(event) = IFlowJsonlEvent::parse_line(&line_text) {
@@ -482,29 +431,7 @@ impl IFlowService {
     // 会话历史相关方法
     // ========================================================================
 
-    /// 读取 projects.json 获取项目配置
-    fn read_projects_config() -> Result<IFlowProjectsConfig> {
-        let config_dir = Self::get_iflow_config_dir()?;
-        let projects_json_path = config_dir.join("config").join("projects.json");
-
-        eprintln!("[read_projects_config] 读取: {:?}", projects_json_path);
-
-        if !projects_json_path.exists() {
-            return Ok(IFlowProjectsConfig {
-                projects: HashMap::new(),
-            });
-        }
-
-        let file = File::open(&projects_json_path)
-            .map_err(|e| AppError::ProcessError(format!("打开 projects.json 失败: {}", e)))?;
-
-        let config: IFlowProjectsConfig = serde_json::from_reader(file)
-            .map_err(|e| AppError::ProcessError(format!("解析 projects.json 失败: {}", e)))?;
-
-        Ok(config)
-    }
-
-    /// 列出项目的所有 IFlow 会话元数据
+        /// 列出项目的所有 IFlow 会话元数据
     pub fn list_sessions(config: &Config) -> Result<Vec<IFlowSessionMeta>> {
         let work_dir = config.work_dir.as_deref()
             .map(|p| p.to_string_lossy().to_string())

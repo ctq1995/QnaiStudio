@@ -31,6 +31,16 @@ export async function setClaudeCmd(cmd: string): Promise<void> {
   return invoke('set_claude_cmd', { cmd });
 }
 
+/** 设置 Codex 命令路径 */
+export async function setCodexCmd(cmd: string): Promise<void> {
+  return invoke('set_codex_cmd', { cmd });
+}
+
+/** 设置 IFlow 命令路径 */
+export async function setIFlowCmd(cmd: string): Promise<void> {
+  return invoke('set_iflow_cmd', { cmd });
+}
+
 /** 路径验证结果 */
 export interface PathValidationResult {
   valid: boolean;
@@ -58,6 +68,26 @@ export async function validateIFlowPath(path: string): Promise<PathValidationRes
   return invoke<PathValidationResult>('validate_iflow_path', { path });
 }
 
+/** 查找所有可用的 Codex CLI 路径 */
+export async function findCodexPaths(): Promise<string[]> {
+  return invoke<string[]>('find_codex_paths');
+}
+
+/** 验证 Codex CLI 路径 */
+export async function validateCodexPath(path: string): Promise<PathValidationResult> {
+  return invoke<PathValidationResult>('validate_codex_path', { path });
+}
+
+/** 查找所有可用的 Gemini CLI 路径 */
+export async function findGeminiPaths(): Promise<string[]> {
+  return invoke<string[]>('find_gemini_paths');
+}
+
+/** 验证 Gemini CLI 路径 */
+export async function validateGeminiPath(path: string): Promise<PathValidationResult> {
+  return invoke<PathValidationResult>('validate_gemini_path', { path });
+}
+
 // ============================================================================
 // 健康检查命令
 // ============================================================================
@@ -72,37 +102,43 @@ export async function healthCheck(): Promise<HealthStatus> {
 // ============================================================================
 
 /** 启动聊天会话 */
-export async function startChat(message: string, workDir?: string): Promise<string> {
-  return invoke<string>('start_chat', { message, workDir });
+export async function startChat(params: {
+  message: string;
+  systemPrompt?: string;
+  workDir?: string;
+  engineId?: string;
+  sessionId?: string;
+}): Promise<string> {
+  return invoke<string>('start_chat', { payload: params });
 }
 
 /** 继续聊天会话 */
-export async function continueChat(sessionId: string, message: string, workDir?: string): Promise<void> {
-  return invoke('continue_chat', { sessionId, message, workDir });
+export async function continueChat(params: {
+  sessionId: string;
+  message: string;
+  systemPrompt?: string;
+  workDir?: string;
+  engineId?: string;
+}): Promise<void> {
+  return invoke('continue_chat', { payload: params });
 }
 
 /** 中断聊天 */
 export async function interruptChat(sessionId: string): Promise<void> {
-  return invoke('interrupt_chat', { sessionId });
+  return invoke('interrupt_chat', { payload: { sessionId } });
 }
 
 // ============================================================================
-// IFlow 聊天相关命令
+// 事件监听
 // ============================================================================
 
-/** 启动 IFlow 聊天会话 */
-export async function startIFlowChat(message: string): Promise<string> {
-  return invoke<string>('start_iflow_chat', { message });
-}
-
-/** 继续 IFlow 聊天会话 */
-export async function continueIFlowChat(sessionId: string, message: string): Promise<void> {
-  return invoke('continue_iflow_chat', { sessionId, message });
-}
-
-/** 中断 IFlow 聊天 */
-export async function interruptIFlowChat(sessionId: string): Promise<void> {
-  return invoke('interrupt_iflow_chat', { sessionId });
+/** 监听 Tauri 后端事件 */
+export async function listenEvent<T>(
+  eventName: string,
+  handler: (payload: T) => void
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<T>(eventName, (event) => handler(event.payload));
 }
 
 // ============================================================================
@@ -130,11 +166,6 @@ export async function readDirectory(path: string) {
 
 /** 获取文件内容 */
 export async function getFileContent(path: string): Promise<string> {
-  return invoke('get_file_content', { path });
-}
-
-/** 读取文件内容（别名） */
-export async function readFile(path: string): Promise<string> {
   return invoke('get_file_content', { path });
 }
 

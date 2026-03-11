@@ -5,6 +5,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { FloatingWindow } from './components/FloatingWindow'
+import './index.css'
 
 // 阻止右键菜单，让用户可以通过拖拽来移动窗口
 document.addEventListener('contextmenu', (e) => {

@@ -1,0 +1,52 @@
+import type { EngineId } from '../types';
+
+const DEFAULT_ENGINE_ID: EngineId = 'claude-code';
+
+export const ENGINE_LABELS: Record<EngineId, string> = {
+  'claude-code': 'Claude Code',
+  'codex-cli': 'Codex CLI',
+  iflow: 'IFlow',
+  gemini: 'Gemini CLI',
+};
+
+export const ENGINE_VERSION_PREFIX_MAP: Record<EngineId, readonly string[]> = {
+  'claude-code': ['Claude Code', 'Claude'],
+  'codex-cli': ['Codex CLI', 'Codex'],
+  iflow: ['IFlow'],
+  gemini: ['Gemini CLI', 'Gemini'],
+};
+
+export function getEngineLabel(engineId?: EngineId): string {
+  if (!engineId) {
+    return ENGINE_LABELS[DEFAULT_ENGINE_ID];
+  }
+  return ENGINE_LABELS[engineId] ?? engineId;
+}
+
+interface FormatEngineVersionLabelOptions {
+  engineId: EngineId;
+  engineLabel: string;
+  version: string;
+  prefixMap?: Record<EngineId, readonly string[]>;
+}
+
+export function formatEngineVersionLabel(options: FormatEngineVersionLabelOptions): string {
+  const { engineId, engineLabel, version, prefixMap = ENGINE_VERSION_PREFIX_MAP } = options;
+  if (!version) {
+    return '';
+  }
+
+  const normalized = version.trim();
+  const candidates = [engineLabel, engineId, ...(prefixMap[engineId] ?? [])].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const candidateLower = candidate.toLowerCase();
+    const valueLower = normalized.toLowerCase();
+    if (valueLower.startsWith(candidateLower)) {
+      const stripped = normalized.slice(candidate.length).trim().replace(/^[\s:-]+/, '');
+      return stripped || normalized;
+    }
+  }
+
+  return normalized;
+}

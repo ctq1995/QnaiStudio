@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import { Layout, Sidebar, Main, StatusIndicator, SettingsModal, FileExplorer, ResizeHandle, ConnectingOverlay, ErrorBoundary } from './components/Common';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Layout, SettingsModal, FileExplorer, ResizeHandle, ConnectingOverlay, ErrorBoundary } from './components/Common';
 import { EnhancedChatMessages, ChatInput } from './components/Chat';
 import { ToolPanel } from './components/ToolPanel';
 import { EditorPanel } from './components/Editor';
@@ -10,30 +10,38 @@ import { SessionHistoryPanel } from './components/Chat/SessionHistoryPanel';
 import { useConfigStore, useEventChatStore, useViewStore, useWorkspaceStore, useFloatingWindowStore } from './stores';
 import * as tauri from './services/tauri';
 import { bootstrapEngines } from './core/engine-bootstrap';
+import { getEngineAvailability, getEngineVersion } from './types';
+import { ENGINE_VERSION_PREFIX_MAP, formatEngineVersionLabel, getEngineLabel } from './utils/engineLabels';
 import { listen, emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWorkspaceById } from './utils/workspaceScope';
 import './index.css';
-
 function App() {
   const { healthStatus, isConnecting, connectionState, loadConfig, config } = useConfigStore();
   const {
     isStreaming,
     sendMessage,
     interruptChat,
-    error,
     restoreFromStorage,
     saveToStorage,
     initializeEventListeners,
     messages,
   } = useEventChatStore();
   const workspaces = useWorkspaceStore(state => state.workspaces);
-  const currentWorkspace = useWorkspaceStore(state => state.getCurrentWorkspace());
+  const currentWorkspaceId = useWorkspaceStore(state => state.currentWorkspaceId);
+  const currentWorkspace = useMemo(
+    () => getCurrentWorkspaceById(workspaces, currentWorkspaceId),
+    [currentWorkspaceId, workspaces],
+  );
   const currentWorkspacePath = currentWorkspace?.path;
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   // 使用 ref 确保初始化只执行一次
   const isInitialized = useRef(false);
   const hasCheckedWorkspaces = useRef(false);
+  const hasSyncedWorkspaceRef = useRef(false);
   const mouseLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localStorageSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const {
     showSidebar,
     showEditor,
@@ -44,13 +52,42 @@ function App() {
     editorWidth,
     toolPanelWidth,
     developerPanelWidth,
+    theme,
     setSidebarWidth,
     setEditorWidth,
     setToolPanelWidth,
     setDeveloperPanelWidth,
-    toggleSessionHistory
+    toggleSessionHistory,
+    toggleTheme,
   } = useViewStore();
   const { showFloatingWindow } = useFloatingWindowStore();
+
+  // 应用持久化的主题
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const currentEngine = config?.defaultEngine ?? 'claude-code';
+  const currentEngineLabel = getEngineLabel(currentEngine);
+  const isCurrentEngineAvailable = healthStatus
+    ? getEngineAvailability(healthStatus, currentEngine)
+    : false;
+  const currentEngineVersion = healthStatus
+    ? getEngineVersion(healthStatus, currentEngine)
+    : '未知版本';
+  const engineVersionLabel = formatEngineVersionLabel({
+    engineId: currentEngine,
+    engineLabel: currentEngineLabel,
+    version: currentEngineVersion,
+    prefixMap: ENGINE_VERSION_PREFIX_MAP,
+  });
+  const engineStatus = connectionState === 'failed'
+    ? 'error'
+    : isConnecting
+      ? 'loading'
+      : isCurrentEngineAvailable
+        ? 'online'
+        : 'offline';
 
   // 初始化配置（只执行一次）
   useEffect(() => {
@@ -63,6 +100,9 @@ function App() {
         // 先加载配置，获取默认引擎
         await loadConfig();
 
+        // 显示主窗口（配置加载完毕，UI 已可渲染）
+        await getCurrentWindow().show();
+
         // 获取默认引擎 ID
         const config = useConfigStore.getState().config;
         const defaultEngine = config?.defaultEngine || 'claude-code';
@@ -73,10 +113,10 @@ function App() {
         // 尝试从本地存储恢复聊天状态
         const restored = restoreFromStorage();
         if (restored) {
-          console.log('[App] 已从崩溃中恢复聊天状态');
+          console.log('[App] 已从本地恢复聊天状态');
         }
       } catch (error) {
-        console.error('[App] 初始化失败:', error);
+        console.error('[App] 初始化失败', error);
         // 失败时重置标志，允许重试
         isInitialized.current = false;
       }
@@ -86,43 +126,51 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 单独的 effect：检查工作区状态
+  // 单独一个 effect：检查工作区状态
   // 使用 ref 确保只检查一次，避免重复弹出模态框
   useEffect(() => {
     if (hasCheckedWorkspaces.current) return;
 
     // zustand persist 是异步恢复的，需要等待 workspaces 加载完成
-    // 如果 workspaces 为空数组且已经过了初始化阶段，说明真的没有工作区
-    if (workspaces.length === 0 && isInitialized.current) {
+    // 等待初始化完成后再检查，避免竞态条件
+    if (!isInitialized.current) return;
+
+    if (workspaces.length === 0) {
       console.log('[App] 无工作区，显示创建工作区模态框');
       setShowCreateWorkspace(true);
       hasCheckedWorkspaces.current = true;
-    } else if (workspaces.length > 0) {
+    } else {
       // 有工作区，标记已检查
       hasCheckedWorkspaces.current = true;
     }
-  }, [workspaces.length]);
+  }, [workspaces.length, isInitialized.current]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 同步当前工作区路径到后端配置
   useEffect(() => {
     if (!currentWorkspacePath || !isInitialized.current) return;
+    if (hasSyncedWorkspaceRef.current) return;
+    if (config?.workDir === currentWorkspacePath) {
+      hasSyncedWorkspaceRef.current = true;
+      return;
+    }
 
     const syncWorkspace = async () => {
       try {
         await tauri.setWorkDir(currentWorkspacePath);
+        hasSyncedWorkspaceRef.current = true;
         console.log('[App] 工作区路径已同步:', currentWorkspacePath);
       } catch (error) {
-        console.error('[App] 同步工作区路径失败:', error);
+        console.error('[App] 同步工作区路径失败', error);
       }
     };
 
     syncWorkspace();
-  }, [currentWorkspacePath]);
+  }, [config?.workDir, currentWorkspacePath]);
 
   // 监听崩溃保存事件
   useEffect(() => {
     const handleCrashSave = () => {
-      console.log('[App] 检测到崩溃信号，保存状态...');
+      console.log('[App] 检测到崩溃信号，保存状态..');
       saveToStorage();
     };
 
@@ -169,7 +217,7 @@ function App() {
     };
   }, [initializeEventListeners]);
 
-  // 窗口焦点检测 - 自动切换到悬浮窗模式
+  // 窗口焦点检查 - 自动切换到悬浮窗模式
   useEffect(() => {
     // 只在配置启用且模式为 auto 时才监听
     const floatingConfig = config?.floatingWindow
@@ -181,11 +229,11 @@ function App() {
 
     // 窗口失去焦点时，延迟后切换到悬浮窗
     const handleBlur = () => {
-      console.log('[App] 窗口失去焦点，准备切换到悬浮窗')
+      console.log('[App] 窗口失去焦点，准备切换到悬浮窗');
       // 延迟后切换到悬浮窗
       mouseLeaveTimerRef.current = setTimeout(() => {
         if (document.visibilityState === 'visible') {
-          console.log('[App] 窗口仍无焦点，切换到悬浮窗')
+          console.log('[App] 仍未获得焦点，切换到悬浮窗');
           showFloatingWindow();
         }
       }, delay);
@@ -193,7 +241,7 @@ function App() {
 
     // 窗口获得焦点时，取消切换
     const handleFocus = () => {
-      console.log('[App] 窗口获得焦点，取消自动切换')
+      console.log('[App] 窗口获得焦点，取消自动切换');
       if (mouseLeaveTimerRef.current) {
         clearTimeout(mouseLeaveTimerRef.current);
         mouseLeaveTimerRef.current = null;
@@ -213,13 +261,20 @@ function App() {
     // 使用具体值作为依赖，避免对象引用变化导致重复执行
   }, [config?.floatingWindow?.enabled, config?.floatingWindow?.mode, config?.floatingWindow?.collapseDelay]);
 
-  // 跨窗口数据同步 - 同步消息到 localStorage（供悬浮窗读取）
+  // 跨窗口数据同步 - 同步消息到 localStorage（供悬浮窗读取，防抖 500ms）
   useEffect(() => {
-    // 将完整消息同步到 localStorage
-    localStorage.setItem('chat_messages_sync', JSON.stringify(messages));
-
-    // 同步流式状态
-    localStorage.setItem('chat_is_streaming', JSON.stringify(isStreaming));
+    if (localStorageSyncTimerRef.current) {
+      clearTimeout(localStorageSyncTimerRef.current);
+    }
+    localStorageSyncTimerRef.current = setTimeout(() => {
+      localStorage.setItem('chat_messages_sync', JSON.stringify(messages));
+      localStorage.setItem('chat_is_streaming', JSON.stringify(isStreaming));
+    }, 500);
+    return () => {
+      if (localStorageSyncTimerRef.current) {
+        clearTimeout(localStorageSyncTimerRef.current);
+      }
+    };
   }, [messages, isStreaming]);
 
   // 跨窗口数据同步 - 监听悬浮窗发送的消息
@@ -294,146 +349,133 @@ function App() {
   return (
     <ErrorBoundary>
       <Layout>
-        {/* 连接中蒙板 */}
         {(isConnecting || connectionState === 'failed') && <ConnectingOverlay />}
 
-      {/* 顶部菜单栏 */}
-      <TopMenuBarComponent
-        onNewConversation={() => {
-          // 新对话功能直接清空消息
-        }}
-        onSettings={() => setShowSettings(true)}
-        onCreateWorkspace={() => setShowCreateWorkspace(true)}
-      />
+        <TopMenuBarComponent
+          onNewConversation={() => {
+            useEventChatStore.getState().clearMessages();
+          }}
+          onSettings={() => setShowSettings(true)}
+          onCreateWorkspace={() => setShowCreateWorkspace(true)}
+          onToggleTheme={toggleTheme}
+          theme={theme}
+          engineLabel={currentEngineLabel}
+          engineVersion={engineVersionLabel}
+          engineStatus={engineStatus}
+        />
 
-      {/* 主体内容区域：Sidebar | Main | ToolPanel */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* 条件渲染 Sidebar */}
-        {showSidebar && (
-          <>
-            <Sidebar width={sidebarWidth}>
-              <FileExplorer />
-            </Sidebar>
-            <ResizeHandle
-              direction="horizontal"
-              position="right"
-              onDrag={handleSidebarResize}
-            />
-          </>
-        )}
-
-        <Main className="flex-row">
-          {/* 条件渲染 Editor */}
-          {showEditor && (
-            <div
-              className="border-r border-border flex flex-col"
-              style={{ width: `${editorWidth}%` }}
-            >
-              <EditorPanel />
-            </div>
-          )}
-
-          {/* Editor/Chat 分割手柄 */}
-          {showEditor && (
-            <ResizeHandle
-              direction="horizontal"
-              position="right"
-              onDrag={handleEditorResize}
-            />
-          )}
-
-          {/* 聊天区域 */}
-          <div className="flex flex-col min-w-[300px] flex-1">
-            {/* 状态指示器 */}
-            <div className="flex items-center justify-between px-4 py-2 bg-background-elevated border-b border-border-subtle">
-              <span className="text-sm text-text-primary">AI 对话</span>
-              <StatusIndicator
-                status={
-                  config?.defaultEngine === 'iflow'
-                    ? (healthStatus?.iflowAvailable ? 'online' : 'offline')
-                    : (healthStatus?.claudeAvailable ? 'online' : 'offline')
-                }
-                label={
-                  config?.defaultEngine === 'iflow'
-                    ? (healthStatus?.iflowVersion ?? 'IFlow 未连接')
-                    : (healthStatus?.claudeVersion ?? 'Claude 未连接')
-                }
-              />
-            </div>
-
-            {error && (
-              <div className="mx-4 mt-4 p-3 bg-danger-faint border border-danger/30 rounded-xl text-danger text-sm">
-                {error}
-              </div>
+        <div className="flex-1 overflow-hidden px-3 pb-3">
+          <div className="flex h-full gap-3 overflow-hidden">
+            {showSidebar && (
+              <>
+                <div
+                  className="rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
+                  style={{ width: sidebarWidth }}
+                >
+                  <FileExplorer onCreateWorkspace={() => setShowCreateWorkspace(true)} />
+                </div>
+                <ResizeHandle
+                  direction="horizontal"
+                  position="right"
+                  onDrag={handleSidebarResize}
+                />
+              </>
             )}
 
-            <EnhancedChatMessages />
+            <div className="flex min-w-0 flex-1 gap-3 overflow-hidden">
+              {showEditor && (
+                <div
+                  className="flex min-w-[320px] flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
+                  style={{ width: editorWidth + '%' }}
+                >
+                  <EditorPanel />
+                </div>
+              )}
 
-            <ChatInput
-              onSend={sendMessage}
-              onInterrupt={interruptChat}
-              disabled={!healthStatus?.claudeAvailable || !currentWorkspace}
-              isStreaming={isStreaming}
-            />
-          </div>
-        </Main>
+              {showEditor && (
+                <ResizeHandle
+                  direction="horizontal"
+                  position="right"
+                  onDrag={handleEditorResize}
+                />
+              )}
 
-        {/* ToolPanel 拖拽手柄 */}
-        {showToolPanel && (
-          <ResizeHandle
-            direction="horizontal"
-            position="left"
-            onDrag={handleToolPanelResize}
-          />
-        )}
+              <div className="flex min-w-[320px] flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft">
+                <EnhancedChatMessages />
 
-        {/* 条件渲染 ToolPanel */}
-        {showToolPanel && <ToolPanel width={toolPanelWidth} />}
-
-        {/* DeveloperPanel 拖拽手柄 */}
-        {showDeveloperPanel && (
-          <ResizeHandle
-            direction="horizontal"
-            position="left"
-            onDrag={handleDeveloperPanelResize}
-          />
-        )}
-
-        {/* 条件渲染 DeveloperPanel */}
-        {showDeveloperPanel && <DeveloperPanel width={developerPanelWidth} />}
-      </div>
-
-      {/* 设置模态框 */}
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
-
-      {/* 创建工作区模态框 */}
-      {showCreateWorkspace && (
-        <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />
-      )}
-
-      {/* 会话历史模态框 */}
-      {showSessionHistory && (
-        <>
-          <div
-            className="fixed inset-0 bg-black/50 z-50"
-            onClick={toggleSessionHistory}
-          />
-          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none p-4">
-            <div
-              className="bg-background-elevated border border-border rounded-xl shadow-xl w-full max-w-2xl h-[80vh] flex flex-col pointer-events-auto overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <SessionHistoryPanel onClose={toggleSessionHistory} />
+                <div className="border-t border-border bg-background-base/40">
+                  <ChatInput
+                    onSend={sendMessage}
+                    onInterrupt={interruptChat}
+                    disabled={!isCurrentEngineAvailable || !currentWorkspace}
+                    isStreaming={isStreaming}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
-        </>
-      )}
 
+            {showToolPanel && (
+              <ResizeHandle
+                direction="horizontal"
+                position="left"
+                onDrag={handleToolPanelResize}
+              />
+            )}
+
+            {showToolPanel && (
+              <ToolPanel
+                width={toolPanelWidth}
+                className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
+              />
+            )}
+
+            {showDeveloperPanel && (
+              <ResizeHandle
+                direction="horizontal"
+                position="left"
+                onDrag={handleDeveloperPanelResize}
+              />
+            )}
+
+            {showDeveloperPanel && (
+              <DeveloperPanel
+                width={developerPanelWidth}
+                className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
+              />
+            )}
+          </div>
+        </div>
+
+        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+        {showCreateWorkspace && (
+          <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />
+        )}
+
+        {showSessionHistory && (
+          <>
+            <div className="fixed inset-0 z-[2000] bg-black/50" onClick={toggleSessionHistory} />
+            <div className="pointer-events-none fixed inset-0 z-[2000] flex items-center justify-center p-4">
+              <div
+                className="pointer-events-auto flex h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated shadow-xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <SessionHistoryPanel onClose={toggleSessionHistory} />
+              </div>
+            </div>
+          </>
+        )}
       </Layout>
     </ErrorBoundary>
   );
 }
 
 export default App;
+
+
+
+
+
+
+
+

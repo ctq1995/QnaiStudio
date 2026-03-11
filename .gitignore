@@ -49,3 +49,11 @@ coverage/
 # OS generated files
 Thumbs.db
 Desktop.ini
+# Temporary / local artifacts
+.claude/
+.tmp-*/
+.tmp-*.*
+test-results/
+openai-codex-*.tgz
+vite-dev.log
+

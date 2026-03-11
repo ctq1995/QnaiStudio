@@ -1,653 +1,405 @@
 use crate::error::{AppError, Result};
-use crate::models::config::{Config, HealthStatus, EngineId, ClaudeCodeConfig};
-use std::path::{Path, PathBuf};
-use std::env;
-use std::process::Command;
+use crate::models::config::{Config, EngineId, HealthStatus};
+use crate::utils::encoding::decode_cli_output;
 use serde::{Deserialize, Serialize};
+use std::env;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// 配置存储管理器
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+trait CommandExt {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl CommandExt for Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
+
 pub struct ConfigStore {
     config: Config,
     config_path: PathBuf,
 }
 
 impl ConfigStore {
-    /// 创建新的配置存储
     pub fn new() -> Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| AppError::ConfigError("无法获取配置目录".to_string()))?
             .join("claude-code-pro");
-
-        eprintln!("配置目录: {:?}", config_dir);
-
-        // 确保配置目录存在
         std::fs::create_dir_all(&config_dir)?;
-        eprintln!("配置目录已创建");
 
         let config_path = config_dir.join("config.json");
-        eprintln!("配置文件路径: {:?}", config_path);
-
         let mut config = Self::load_from_file(&config_path)?;
-
-        // 执行配置迁移
         config.migrate();
 
-        eprintln!("当前引擎: {}", config.default_engine);
-        eprintln!("当前 claude_code.cli_path: {}", config.claude_code.cli_path);
+        Self::hydrate_default_path(&mut config.claude_code.cli_path, "claude");
+        Self::hydrate_default_path(&mut config.codex_cli.cli_path, "codex");
+        Self::hydrate_default_path(&mut config.gemini.cli_path, "gemini");
 
-        // 如果 claude_code.cli_path 是默认值，尝试解析完整路径
-        if config.claude_code.cli_path == "claude" {
-            eprintln!("尝试解析 Claude 路径...");
-            if let Some(full_path) = Self::resolve_claude_path() {
-                config.claude_code.cli_path = full_path.clone();
-                eprintln!("找到 Claude 路径: {}", full_path);
-                // 立即保存配置
-                if let Err(e) = Self::save_config_to_path(&config, &config_path) {
-                    eprintln!("保存配置失败: {}", e);
-                } else {
-                    eprintln!("Claude 路径已解析并保存: {}", full_path);
-                }
-            } else {
-                eprintln!("无法解析 Claude 路径");
-            }
+        if !config_path.exists() {
+            Self::save_config_to_path(&config, &config_path)?;
         }
 
         Ok(Self { config, config_path })
     }
 
-    /// 查找 claude 命令的完整路径
-    fn resolve_claude_path() -> Option<String> {
-        #[cfg(windows)]
-        {
-            // Windows 上先尝试 PowerShell 的 Get-Command
-            let ps_output = Command::new("powershell")
-                .args(["-Command", "Get-Command claude -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source"])
-                .output()
-                .ok();
-
-            if let Some(output) = ps_output {
-                if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    // PowerShell 可能返回 .ps1 文件，我们需要 .cmd 文件
-                    if path.ends_with(".ps1") {
-                        let cmd_path = path.replace(".ps1", ".cmd");
-                        if std::path::Path::new(&cmd_path).exists() {
-                            return Some(cmd_path);
-                        }
-                    }
-                    if !path.is_empty() && std::path::Path::new(&path).exists() {
-                        return Some(path);
-                    }
-                }
-            }
-
-            // 后备：使用 where 命令
-            let output = Command::new("cmd")
-                .args(["/C", "where", "claude"])
-                .output()
-                .ok()?;
-
-            if output.status.success() {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            // Unix 上使用 which 命令
-            let output = Command::new("sh")
-                .args(["-c", "which claude"])
-                .output()
-                .ok()?;
-
-            if output.status.success() {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
+    fn hydrate_default_path(path: &mut String, command_name: &str) {
+        if path == command_name {
+            if let Some(full_path) = Self::resolve_cli_path(command_name) {
+                *path = full_path;
             }
         }
     }
 
-    /// 保存配置到指定路径
     fn save_config_to_path(config: &Config, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(config)?;
         std::fs::write(path, content)?;
         Ok(())
     }
 
-    /// 从文件加载配置
     fn load_from_file(path: &Path) -> Result<Config> {
-        if path.exists() {
-            let content = std::fs::read_to_string(path)?;
-            // 先尝试按新格式解析
-            if let Ok(mut config) = serde_json::from_str::<Config>(&content) {
-                // 执行迁移
-                config.migrate();
-                return Ok(config);
-            }
-            // 如果失败，尝试按旧格式解析然后迁移
-            if let Ok(old_config) = serde_json::from_str::<OldConfig>(&content) {
-                return Ok(old_config.migrate_to_new());
-            }
-            // 都失败，返回默认配置
-            Ok(Config::default())
-        } else {
-            Ok(Config::default())
+        if !path.exists() {
+            return Ok(Config::default());
         }
+
+        let content = std::fs::read_to_string(path)?;
+        if let Ok(mut config) = serde_json::from_str::<Config>(&content) {
+            config.migrate();
+            return Ok(config);
+        }
+
+        if let Ok(old_config) = serde_json::from_str::<OldConfig>(&content) {
+            return Ok(old_config.migrate_to_new());
+        }
+
+        Ok(Config::default())
     }
 
-    /// 保存配置到文件
     pub fn save(&self) -> Result<()> {
-        let content = serde_json::to_string_pretty(&self.config)?;
-        std::fs::write(&self.config_path, content)?;
-        Ok(())
+        Self::save_config_to_path(&self.config, &self.config_path)
     }
 
-    /// 获取配置
     pub fn get(&self) -> &Config {
         &self.config
     }
 
-    /// 更新配置
     pub fn update(&mut self, config: Config) -> Result<()> {
         self.config = config;
         self.save()
     }
 
-    /// 设置工作目录
     pub fn set_work_dir(&mut self, path: Option<PathBuf>) -> Result<()> {
         self.config.work_dir = path;
         self.save()
     }
 
-    /// 设置 Claude 命令路径
     pub fn set_claude_cmd(&mut self, cmd: String) -> Result<()> {
         self.config.claude_code.cli_path = cmd;
         self.save()
     }
 
-    /// 设置默认引擎
+    pub fn set_codex_cmd(&mut self, cmd: String) -> Result<()> {
+        self.config.codex_cli.cli_path = cmd;
+        self.save()
+    }
+
+    pub fn set_gemini_cmd(&mut self, cmd: String) -> Result<()> {
+        self.config.gemini.cli_path = cmd;
+        self.save()
+    }
+
+    pub fn set_iflow_cmd(&mut self, cmd: String) -> Result<()> {
+        self.config.iflow.cli_path = Some(cmd);
+        self.save()
+    }
+
     pub fn set_engine(&mut self, engine_id: EngineId) -> Result<()> {
         self.config.set_engine_id(engine_id);
         self.save()
     }
 
-    /// 获取会话目录
     pub fn session_dir(&self) -> Result<PathBuf> {
         if let Some(ref dir) = self.config.session_dir {
-            Ok(dir.clone())
-        } else {
-            let data_dir = dirs::data_local_dir()
-                .ok_or_else(|| AppError::ConfigError("无法获取数据目录".to_string()))?
-                .join("claude-code-pro")
-                .join("sessions");
-
-            // 确保目录存在
-            std::fs::create_dir_all(&data_dir)?;
-            Ok(data_dir)
+            return Ok(dir.clone());
         }
+
+        let data_dir = dirs::data_local_dir()
+            .ok_or_else(|| AppError::ConfigError("无法获取数据目录".to_string()))?
+            .join("claude-code-pro")
+            .join("sessions");
+        std::fs::create_dir_all(&data_dir)?;
+        Ok(data_dir)
     }
 
-    /// 检测 Claude CLI 是否可用
-    pub fn detect_claude(&self) -> Option<String> {
-        let cmd = self.config.get_claude_cmd();
-        eprintln!("[detect_claude] 尝试执行: {} --version", cmd);
-
-        let output = Command::new(&cmd)
-            .arg("--version")
-            .output();
-
-        match output {
-            Ok(output) => {
-                eprintln!("[detect_claude] 进程退出码: {:?}", output.status.code());
-                eprintln!("[detect_claude] stdout: {}", String::from_utf8_lossy(&output.stdout));
-                eprintln!("[detect_claude] stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .next()
-                        .map(|s| s.to_string());
-                    eprintln!("[detect_claude] 解析成功: {:?}", version);
-                    version
-                } else {
-                    eprintln!("[detect_claude] 命令执行失败");
-                    None
-                }
-            }
-            Err(e) => {
-                eprintln!("[detect_claude] 启动进程失败: {:?}", e);
-                None
-            }
-        }
-    }
-
-    /// 检测 IFlow CLI 是否可用
-    pub fn detect_iflow(&self) -> Option<String> {
-        // 如果配置中指定了 iflow 路径，优先使用
-        let iflow_cmd = if let Some(ref cli_path) = self.config.iflow.cli_path {
-            cli_path.clone()
-        } else {
-            // 否则尝试查找
-            Self::find_iflow_path()?
-        };
-
-        eprintln!("[detect_iflow] 尝试执行: {} --version", iflow_cmd);
-
-        let output = Command::new(&iflow_cmd)
-            .arg("--version")
-            .output();
-
-        match output {
-            Ok(output) => {
-                eprintln!("[detect_iflow] 进程退出码: {:?}", output.status.code());
-                eprintln!("[detect_iflow] stdout: {}", String::from_utf8_lossy(&output.stdout));
-                eprintln!("[detect_iflow] stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .next()
-                        .map(|s| s.to_string());
-//                     eprintln!("[detect_iflow] 解析成功: {:?}", version);
-                    version
-                } else {
-                    eprintln!("[detect_iflow] 命令执行失败");
-                    None
-                }
-            }
-            Err(e) => {
-                eprintln!("[detect_iflow] 启动进程失败: {:?}", e);
-                None
-            }
-        }
-    }
-
-    /// 查找 IFlow CLI 路径
-    pub fn find_iflow_path() -> Option<String> {
-        // 1. 尝试 which/where 命令
-        #[cfg(windows)]
-        if let Ok(output) = Command::new("where").arg("iflow").output() {
-            if output.status.success() {
-                if let Some(path) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                    eprintln!("[find_iflow_path] 找到: {}", path);
-                    return Some(path.to_string());
-                }
-            }
-        }
-
-        #[cfg(not(windows))]
-        if let Ok(output) = Command::new("which").arg("iflow").output() {
-            if output.status.success() {
-                if let Some(path) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                    eprintln!("[find_iflow_path] 找到: {}", path);
-                    return Some(path.to_string());
-                }
-            }
-        }
-
-        // 2. 检查常见安装路径
-        #[cfg(windows)]
-        {
-            if let Ok(username) = env::var("USERNAME") {
-                let common_paths = vec![
-                    // npm 全局安装路径
-                    format!(r"{}\AppData\Roaming\npm\iflow.cmd", username),
-                    // Scoop 安装路径
-                    format!(r"{}\scoop\shims\iflow.cmd", env::var("USERPROFILE").unwrap_or_default()),
-                    // 直接尝试 iflow (可能在 PATH 中)
-                    "iflow.cmd".to_string(),
-                    "iflow".to_string(),
-                ];
-
-                for path in common_paths {
-                    eprintln!("[find_iflow_path] 检查: {}", path);
-                    if Path::new(&path).exists() {
-                        eprintln!("[find_iflow_path] 找到: {}", path);
-                        return Some(path);
-                    }
-                }
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let home = env::var("HOME").unwrap_or_default();
-            let common_paths = vec![
-                "/opt/homebrew/bin/iflow".to_string(),
-                "/usr/local/bin/iflow".to_string(),
-                "/usr/bin/iflow".to_string(),
-                format!("{}/.npm-global/bin/iflow", home),
-                format!("{}/.local/bin/iflow", home),
-            ];
-
-            for path in common_paths {
-                eprintln!("[find_iflow_path] 检查: {}", path);
-                if Path::new(&path).exists() {
-                    eprintln!("[find_iflow_path] 找到: {}", path);
-                    return Some(path);
-                }
-            }
-        }
-
-        eprintln!("[find_iflow_path] 未找到 iflow");
-        None
-    }
-
-    /// 获取健康状态
-    pub fn health_status(&self) -> HealthStatus {
-        let claude_version = self.detect_claude();
-        let claude_available = claude_version.is_some();
-
-        let iflow_version = self.detect_iflow();
-        let iflow_available = iflow_version.is_some();
-
-        HealthStatus {
-            claude_available,
-            claude_version,
-            iflow_available: Some(iflow_available),
-            iflow_version,
-            work_dir: self.config.work_dir.as_ref()
-                .and_then(|p| p.to_str().map(|s| s.to_string())),
-            config_valid: true,
-        }
-    }
-
-    /// 获取当前工作目录
-    pub fn current_work_dir(&self) -> PathBuf {
-        self.config.work_dir.clone()
-            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    }
-
-    /// 设置会话目录
     pub fn set_session_dir(&mut self, path: PathBuf) -> Result<()> {
         std::fs::create_dir_all(&path)?;
         self.config.session_dir = Some(path);
         self.save()
     }
 
-    /// 查找所有可用的 Claude CLI 路径
+    pub fn current_work_dir(&self) -> PathBuf {
+        self.config
+            .work_dir
+            .clone()
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+
+    pub fn detect_claude(&self) -> Option<String> {
+        Self::detect_version(&self.config.get_claude_cmd())
+    }
+
+    pub fn detect_codex(&self) -> Option<String> {
+        Self::detect_version(&self.config.get_codex_cmd())
+    }
+
+    pub fn detect_gemini(&self) -> Option<String> {
+        Self::detect_version(&self.config.get_gemini_cmd())
+    }
+
+    pub fn detect_iflow(&self) -> Option<String> {
+        let cli_path = self
+            .config
+            .iflow
+            .cli_path
+            .clone()
+            .or_else(Self::find_iflow_path)?;
+        Self::detect_version(&cli_path)
+    }
+
+    fn detect_version(command_path: &str) -> Option<String> {
+        let output = Command::new(command_path)
+            .arg("--version")
+            .no_window()
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        decode_cli_output(&output.stdout)
+            .lines()
+            .next()
+            .map(|line| line.trim().to_string())
+    }
+
+    pub fn health_status(&self) -> HealthStatus {
+        let claude_version = self.detect_claude();
+        let iflow_version = self.detect_iflow();
+        let codex_version = self.detect_codex();
+        let gemini_version = self.detect_gemini();
+
+        HealthStatus {
+            claude_available: claude_version.is_some(),
+            claude_version,
+            iflow_available: iflow_version.is_some(),
+            iflow_version,
+            codex_available: codex_version.is_some(),
+            codex_version,
+            gemini_available: gemini_version.is_some(),
+            gemini_version,
+            work_dir: self
+                .config
+                .work_dir
+                .as_ref()
+                .and_then(|path| path.to_str().map(|value| value.to_string())),
+            config_valid: true,
+        }
+    }
+
     pub fn find_claude_paths() -> Vec<String> {
+        Self::find_cli_paths("claude")
+    }
+
+    pub fn find_codex_paths() -> Vec<String> {
+        Self::find_cli_paths("codex")
+    }
+
+    pub fn find_gemini_paths() -> Vec<String> {
+        Self::find_cli_paths("gemini")
+    }
+
+    pub fn find_iflow_paths() -> Vec<String> {
+        Self::find_cli_paths("iflow")
+    }
+
+    pub fn find_iflow_path() -> Option<String> {
+        Self::resolve_cli_path("iflow")
+    }
+
+    pub fn validate_claude_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
+        Self::validate_cli_path(path)
+    }
+
+    pub fn validate_codex_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
+        Self::validate_cli_path(path)
+    }
+
+    pub fn validate_gemini_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
+        Self::validate_cli_path(path)
+    }
+
+    pub fn validate_iflow_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
+        Self::validate_cli_path(path)
+    }
+
+    fn validate_cli_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
+        if !Path::new(&path).exists() {
+            return Ok((false, Some("文件不存在".to_string()), None));
+        }
+
+        match Command::new(&path).arg("--version").no_window().output() {
+            Ok(output) if output.status.success() => {
+                let version = decode_cli_output(&output.stdout)
+                    .lines()
+                    .next()
+                    .map(|line| line.trim().to_string());
+                Ok((true, None, version))
+            }
+            Ok(output) => {
+                let stderr = decode_cli_output(&output.stderr).trim().to_string();
+                Ok((false, Some(format!("执行失败: {}", stderr)), None))
+            }
+            Err(error) => Ok((false, Some(format!("无法执行: {}", error)), None)),
+        }
+    }
+
+    fn find_cli_paths(command_name: &str) -> Vec<String> {
         let mut paths = Vec::new();
 
-        // 1. 尝试 which/where 命令
-        if let Some(system_path) = Self::resolve_claude_path() {
-            if !paths.contains(&system_path) {
-                paths.push(system_path);
-            }
+        if let Some(path) = Self::resolve_cli_path(command_name) {
+            paths.push(path);
         }
 
-        // 2. 检查常见安装路径
-        #[cfg(windows)]
-        {
-            if let Some(username) = env::var("USERNAME").ok() {
-                let common_paths = vec![
-                    // npm 全局安装路径
-                    format!(r"{}\AppData\Roaming\npm\claude.cmd", username),
-                    format!(r"{}\AppData\Local\Programs\claude\claude.exe", username),
-                    format!(r"{}\AppData\Local\Programs\claude\claude.cmd", username),
-                    // Program Files
-                    r"C:\Program Files\claude\claude.exe".to_string(),
-                    r"C:\Program Files\claude\claude.cmd".to_string(),
-                    r"C:\Program Files (x86)\claude\claude.exe".to_string(),
-                    r"C:\Program Files (x86)\claude\claude.cmd".to_string(),
-                    // Scoop 安装路径
-                    format!(r"{}\scoop\shims\claude.cmd", env::var("USERPROFILE").unwrap_or_default()),
-                ];
-
-                for path in common_paths {
-                    if Path::new(&path).exists() && Self::validate_path(&path) {
-                        if !paths.contains(&path) {
-                            paths.push(path);
-                        }
-                    }
-                }
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let home = env::var("HOME").unwrap_or_default();
-            let common_paths = vec![
-                // macOS Homebrew
-                "/opt/homebrew/bin/claude".to_string(),
-                "/usr/local/bin/claude".to_string(),
-                // Linux 系统路径
-                "/usr/bin/claude".to_string(),
-                "/usr/local/bin/claude".to_string(),
-                // npm 全局路径
-                format!("{}/.npm-global/bin/claude", home),
-                format!("{}/.local/bin/claude", home),
-            ];
-
-            for path in common_paths {
-                if Path::new(&path).exists() && Self::validate_path(&path) {
-                    if !paths.contains(&path) {
-                        paths.push(path);
-                    }
-                }
+        for path in Self::common_cli_candidates(command_name) {
+            if !paths.contains(&path) && Path::new(&path).exists() && Self::is_valid_cli(&path) {
+                paths.push(path);
             }
         }
 
         paths
     }
 
-    /// 验证路径是否为有效的 Claude CLI
-    fn validate_path(path: &str) -> bool {
+    fn is_valid_cli(path: &str) -> bool {
         Command::new(path)
             .arg("--version")
+            .no_window()
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
-    /// 验证指定路径并返回详细信息
-    pub fn validate_claude_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
-        let path_obj = Path::new(&path);
-
-        // 检查文件是否存在
-        if !path_obj.exists() {
-            return Ok((false, Some("文件不存在".to_string()), None));
-        }
-
-        // 尝试执行 --version
-        match Command::new(&path).arg("--version").output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .next()
-                        .map(|s| s.to_string());
-                    Ok((true, None, version))
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Ok((false, Some(format!("执行失败: {}", stderr)), None))
-                }
-            }
-            Err(e) => {
-                Ok((false, Some(format!("无法执行: {}", e)), None))
-            }
-        }
-    }
-
-    /// 查找所有可用的 IFlow CLI 路径
-    pub fn find_iflow_paths() -> Vec<String> {
-        let mut paths = Vec::new();
-
-        // 1. 尝试 which/where 命令
-        if let Some(system_path) = Self::resolve_iflow_path() {
-            if !paths.contains(&system_path) {
-                paths.push(system_path);
-            }
-        }
-
-        // 2. 检查常见安装路径
+    fn common_cli_candidates(command_name: &str) -> Vec<String> {
         #[cfg(windows)]
         {
-            if let Some(username) = env::var("USERNAME").ok() {
-                let common_paths = vec![
-                    // npm 全局安装路径
-                    format!(r"{}\AppData\Roaming\npm\iflow.cmd", username),
-                    // Scoop 安装路径
-                    format!(r"{}\scoop\shims\iflow.cmd", env::var("USERPROFILE").unwrap_or_default()),
-                ];
-
-                for path in common_paths {
-                    if Path::new(&path).exists() && Self::validate_iflow_path_exists(&path) {
-                        if !paths.contains(&path) {
-                            paths.push(path);
-                        }
-                    }
-                }
-            }
+            let user_profile = env::var("USERPROFILE").unwrap_or_default();
+            return vec![
+                format!(r"{}\AppData\Roaming\npm\{}.cmd", user_profile, command_name),
+                format!(r"{}\AppData\Roaming\npm\{}.exe", user_profile, command_name),
+                format!(r"{}\scoop\shims\{}.cmd", user_profile, command_name),
+            ];
         }
 
         #[cfg(not(windows))]
         {
             let home = env::var("HOME").unwrap_or_default();
-            let common_paths = vec![
-                // npm 全局路径
-                format!("{}/.npm-global/bin/iflow", home),
-                format!("{}/.local/bin/iflow", home),
-                // 系统路径
-                "/usr/local/bin/iflow".to_string(),
-                "/usr/bin/iflow".to_string(),
+            return vec![
+                format!("/opt/homebrew/bin/{}", command_name),
+                format!("/usr/local/bin/{}", command_name),
+                format!("/usr/bin/{}", command_name),
+                format!("{}/.npm-global/bin/{}", home, command_name),
+                format!("{}/.local/bin/{}", home, command_name),
             ];
-
-            for path in common_paths {
-                if Path::new(&path).exists() && Self::validate_iflow_path_exists(&path) {
-                    if !paths.contains(&path) {
-                        paths.push(path);
-                    }
-                }
-            }
         }
-
-        paths
     }
 
-    /// 解析 IFlow CLI 系统路径
-    fn resolve_iflow_path() -> Option<String> {
+    fn resolve_cli_path(command_name: &str) -> Option<String> {
         #[cfg(windows)]
         {
-            // Windows 上先尝试 PowerShell 的 Get-Command
+            let ps_command = format!(
+                "Get-Command {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source",
+                command_name
+            );
             let ps_output = Command::new("powershell")
-                .args(["-Command", "Get-Command iflow -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source"])
+                .args(["-Command", &ps_command])
+                .no_window()
                 .output()
                 .ok();
 
             if let Some(output) = ps_output {
                 if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    // PowerShell 可能返回 .ps1 文件，我们需要 .cmd 文件
-                    if path.ends_with(".ps1") {
-                        let cmd_path = path.replace(".ps1", ".cmd");
-                        if std::path::Path::new(&cmd_path).exists() {
-                            return Some(cmd_path);
-                        }
-                    }
-                    if !path.is_empty() && std::path::Path::new(&path).exists() {
+                    let path = decode_cli_output(&output.stdout).trim().to_string();
+                    if let Some(path) = Self::normalize_windows_command_path(path) {
                         return Some(path);
                     }
                 }
             }
 
-            // 后备：使用 where 命令
             let output = Command::new("where")
-                .args(["iflow"])
+                .arg(command_name)
+                .no_window()
                 .output()
                 .ok()?;
 
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .map(|s| s.trim().to_string())?;
-
-                // 如果返回的路径没有扩展名，尝试添加 .cmd
-                if !path.is_empty() {
-                    if std::path::Path::new(&path).exists() {
-                        return Some(path);
-                    }
-                    // 尝试添加 .cmd 扩展名
-                    let cmd_path = format!("{}.cmd", path);
-                    if std::path::Path::new(&cmd_path).exists() {
-                        return Some(cmd_path);
-                    }
-                }
-                None
-            } else {
-                None
+                let path = decode_cli_output(&output.stdout).lines().next()?.trim().to_string();
+                return Self::normalize_windows_command_path(path);
             }
+
+            None
         }
 
         #[cfg(not(windows))]
         {
-            // Unix/Mac: 使用 which 命令
             let output = Command::new("which")
-                .args(["iflow"])
+                .arg(command_name)
+                .no_window()
                 .output()
                 .ok()?;
-
             if output.status.success() {
-                String::from_utf8_lossy(&output.stdout)
+                return decode_cli_output(&output.stdout)
                     .lines()
                     .next()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
+                    .map(|line| line.trim().to_string());
             }
+            None
         }
     }
 
-    /// 验证路径是否为有效的 IFlow CLI（内部辅助函数）
-    fn validate_iflow_path_exists(path: &str) -> bool {
-        Command::new(path)
-            .arg("--version")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    }
-
-    /// 验证指定路径是否为有效的 IFlow CLI
-    pub fn validate_iflow_path(path: String) -> Result<(bool, Option<String>, Option<String>)> {
-        let path_obj = Path::new(&path);
-
-        // 检查文件是否存在
-        if !path_obj.exists() {
-            return Ok((false, Some("文件不存在".to_string()), None));
+    #[cfg(windows)]
+    fn normalize_windows_command_path(path: String) -> Option<String> {
+        if path.is_empty() {
+            return None;
         }
 
-        // 尝试执行 --version
-        match Command::new(&path).arg("--version").output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .next()
-                        .map(|s| s.to_string());
-                    Ok((true, None, version))
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Ok((false, Some(format!("执行失败: {}", stderr)), None))
-                }
-            }
-            Err(e) => {
-                Ok((false, Some(format!("无法执行: {}", e)), None))
+        if path.ends_with(".ps1") {
+            let cmd_path = path.replace(".ps1", ".cmd");
+            if Path::new(&cmd_path).exists() {
+                return Some(cmd_path);
             }
         }
+
+        if Path::new(&path).exists() {
+            return Some(path);
+        }
+
+        let cmd_path = format!("{}.cmd", path);
+        if Path::new(&cmd_path).exists() {
+            return Some(cmd_path);
+        }
+
+        None
     }
 }
 
-/// 旧版配置格式（用于迁移）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OldConfig {
@@ -658,7 +410,6 @@ struct OldConfig {
 }
 
 impl OldConfig {
-    /// 迁移到新配置格式
     fn migrate_to_new(self) -> Config {
         let claude_cmd_clone = self.claude_cmd.clone();
         Config {
@@ -666,7 +417,9 @@ impl OldConfig {
             claude_code: crate::models::config::ClaudeCodeConfig {
                 cli_path: self.claude_cmd,
             },
+            codex_cli: Default::default(),
             iflow: Default::default(),
+            gemini: Default::default(),
             work_dir: self.work_dir,
             session_dir: self.session_dir,
             git_bin_path: self.git_bin_path,

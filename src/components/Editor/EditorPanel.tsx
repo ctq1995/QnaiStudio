@@ -2,7 +2,7 @@
  * 编辑器面板组件
  */
 
-import { useFileEditorStore } from '../../stores';
+import { useFileEditorStore, useViewStore } from '../../stores';
 import { CodeMirrorEditor } from './Editor';
 import { EditorHeader } from './EditorHeader';
 
@@ -12,6 +12,7 @@ interface EditorPanelProps {
 
 export function EditorPanel({ className = '' }: EditorPanelProps) {
   const { currentFile, setContent, saveFile, isOpen, status, error } = useFileEditorStore();
+  const theme = useViewStore((state) => state.theme);
 
   // 显示错误状态
   if (error) {
@@ -42,9 +43,10 @@ export function EditorPanel({ className = '' }: EditorPanelProps) {
       <EditorHeader />
       <div className="flex-1 overflow-hidden">
         <CodeMirrorEditor
-          key={currentFile.path}
+          key={`${currentFile.path}:${theme}`}
           value={currentFile.content}
           language={currentFile.language}
+          theme={theme}
           onChange={setContent}
           onSave={saveFile}
         />

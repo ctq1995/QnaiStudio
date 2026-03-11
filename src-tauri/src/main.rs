@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    polaris_lib::run()
+    qnai_studio_lib::run()
 }

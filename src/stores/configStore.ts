@@ -1,156 +1,181 @@
-/**
+﻿/**
  * 配置状态管理
  */
 
 import { create } from 'zustand';
 import type { Config, HealthStatus } from '../types';
+import { getEngineAvailability } from '../types';
+import { getEngineLabel } from '../utils/engineLabels';
 import * as tauri from '../services/tauri';
 
 interface ConfigState {
-  /** 当前配置 */
   config: Config | null;
-  /** 健康状态 */
   healthStatus: HealthStatus | null;
-  /** 加载中 */
   loading: boolean;
-  /** 连接中（首次启动） */
   isConnecting: boolean;
-  /** 连接状态 */
   connectionState: 'connecting' | 'success' | 'failed';
-  /** 错误 */
   error: string | null;
-
-  /** 加载配置 */
   loadConfig: () => Promise<void>;
-  /** 更新配置 */
   updateConfig: (config: Config) => Promise<void>;
-  /** 设置工作目录 */
-  setWorkDir: (path: string | null) => Promise<void>;
-  /** 设置 Claude 命令 */
   setClaudeCmd: (cmd: string) => Promise<void>;
-  
-  /** 刷新健康状态 */
+  setCodexCmd: (cmd: string) => Promise<void>;
   refreshHealth: () => Promise<void>;
-  /** 重新连接并更新路径 */
-  retryConnection: (claudeCmd?: string) => Promise<void>;
+  retryConnection: (cliPath?: string) => Promise<void>;
+}
+
+async function setCurrentEngineCliPath(engineId: Config['defaultEngine'] | undefined, cliPath: string) {
+  switch (engineId) {
+    case 'iflow':
+      await tauri.setIFlowCmd(cliPath);
+      return;
+    case 'codex-cli':
+      await tauri.setCodexCmd(cliPath);
+      return;
+    case 'claude-code':
+    default:
+      await tauri.setClaudeCmd(cliPath);
+  }
+}
+
+async function fetchConfigAndHealth() {
+  const [config, healthStatus] = await Promise.all([
+    tauri.getConfig(),
+    tauri.healthCheck(),
+  ]);
+
+  return { config, healthStatus };
+}
+
+function getConnectionState(config: Config | null, healthStatus: HealthStatus): 'success' | 'failed' {
+  return getEngineAvailability(healthStatus, config?.defaultEngine ?? 'claude-code') ? 'success' : 'failed';
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
   config: null,
   healthStatus: null,
   loading: false,
-  isConnecting: true,  // 默认为 true，显示连接蒙板
+  isConnecting: true,
   connectionState: 'connecting',
   error: null,
 
   loadConfig: async () => {
     set({ loading: true, isConnecting: true, error: null, connectionState: 'connecting' });
+
     try {
-      const [config, health] = await Promise.all([
-        tauri.getConfig(),
-        tauri.healthCheck(),
-      ]);
-      const connectionState = health.claudeAvailable ? 'success' : 'failed';
-      set({ config, healthStatus: health, loading: false, isConnecting: false, connectionState });
-    } catch (e) {
+      const { config, healthStatus } = await fetchConfigAndHealth();
       set({
-        error: e instanceof Error ? e.message : '加载配置失败',
+        config,
+        healthStatus,
         loading: false,
         isConnecting: false,
-        connectionState: 'failed'
+        connectionState: getConnectionState(config, healthStatus),
+      });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : '加载配置失败',
+        loading: false,
+        isConnecting: false,
+        connectionState: 'failed',
       });
     }
   },
 
   updateConfig: async (config) => {
     set({ loading: true, error: null });
+
     try {
       await tauri.updateConfig(config);
       set({ config, loading: false });
-    } catch (e) {
+    } catch (error) {
       set({
-        error: e instanceof Error ? e.message : '更新配置失败',
-        loading: false
-      });
-    }
-  },
-
-  setWorkDir: async (path) => {
-    set({ loading: true, error: null });
-    try {
-      await tauri.setWorkDir(path);
-      const config = await tauri.getConfig();
-      set({ config, loading: false });
-    } catch (e) {
-      set({
-        error: e instanceof Error ? e.message : '设置工作目录失败',
-        loading: false
+        error: error instanceof Error ? error.message : '更新配置失败',
+        loading: false,
       });
     }
   },
 
   setClaudeCmd: async (cmd) => {
     set({ loading: true, error: null });
+
     try {
       await tauri.setClaudeCmd(cmd);
       const config = await tauri.getConfig();
       set({ config, loading: false });
-    } catch (e) {
+    } catch (error) {
       set({
-        error: e instanceof Error ? e.message : '设置 Claude 命令失败',
-        loading: false
+        error: error instanceof Error ? error.message : '设置 Claude 命令失败',
+        loading: false,
       });
     }
   },
 
-  
+  setCodexCmd: async (cmd) => {
+    set({ loading: true, error: null });
+
+    try {
+      await tauri.setCodexCmd(cmd);
+      const config = await tauri.getConfig();
+      set({ config, loading: false });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : '设置 Codex 命令失败',
+        loading: false,
+      });
+    }
+  },
 
   refreshHealth: async () => {
     try {
-      const health = await tauri.healthCheck();
-      const connectionState = health.claudeAvailable ? 'success' : 'failed';
-      set({ healthStatus: health, connectionState });
-    } catch (e) {
-      console.error('刷新健康状态失败:', e);
+      const healthStatus = await tauri.healthCheck();
+      const config = useConfigStore.getState().config;
+      set({
+        healthStatus,
+        connectionState: getConnectionState(config, healthStatus),
+      });
+    } catch (error) {
+      console.error('刷新健康状态失败:', error);
       set({ connectionState: 'failed' });
     }
   },
 
-  /** 重新连接并更新路径 */
-  retryConnection: async (claudeCmd?: string) => {
+  retryConnection: async (cliPath?: string) => {
     set({ loading: true, error: null, connectionState: 'connecting' });
+
     try {
-      // 如果提供了新的路径，先更新配置
-      if (claudeCmd) {
-        await tauri.setClaudeCmd(claudeCmd);
-        const config = await tauri.getConfig();
-        set({ config });
+      if (cliPath) {
+        const currentEngine = useConfigStore.getState().config?.defaultEngine;
+        await setCurrentEngineCliPath(currentEngine, cliPath);
       }
-      
-      // 重新检测健康状态
-      const health = await tauri.healthCheck();
-      const connectionState = health.claudeAvailable ? 'success' : 'failed';
-      
+
+      const { config, healthStatus } = await fetchConfigAndHealth();
+      const connectionState = getConnectionState(config, healthStatus);
+
       if (connectionState === 'failed') {
+        const engineLabel = getEngineLabel(config?.defaultEngine);
         set({
-          error: `Claude CLI 未找到。当前路径: ${claudeCmd || '未设置'}`,
+          config,
+          healthStatus,
           loading: false,
-          connectionState: 'failed'
+          connectionState,
+          error: `${engineLabel} CLI 未找到。当前路径: ${cliPath || '未设置'}`,
         });
-      } else {
-        set({
-          healthStatus: health,
-          loading: false,
-          connectionState: 'success',
-          error: null
-        });
+        return;
       }
-    } catch (e) {
+
       set({
-        error: e instanceof Error ? e.message : '连接失败',
+        config,
+        healthStatus,
         loading: false,
-        connectionState: 'failed'
+        connectionState,
+        error: null,
+      });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : '连接失败',
+        loading: false,
+        connectionState: 'failed',
       });
     }
   },
 }));
+

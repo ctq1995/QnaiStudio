@@ -248,7 +248,7 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
       })
 
       // 发出工具调用开始事件
-      results.push(createToolCallStartEvent(toolName, input))
+      results.push(createToolCallStartEvent(toolName, input, toolId))
     }
 
     // 发出 AI 消息事件
@@ -299,7 +299,7 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
     this.toolCallManager.startToolCall(event.tool_name, toolId, event.input)
 
     results.push(createProgressEvent(`调用工具: ${event.tool_name}`))
-    results.push(createToolCallStartEvent(event.tool_name, event.input))
+    results.push(createToolCallStartEvent(event.tool_name, event.input, toolId))
 
     return results
   }
@@ -314,6 +314,7 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
     // 注意：这里通过工具名称匹配，假设同一时间不会有同名工具调用
     const toolCalls = this.toolCallManager.getToolCalls()
     const matchingTool = toolCalls.find(tc => tc.name === event.tool_name && tc.status === 'running')
+    const toolId = event.tool_id || matchingTool?.id
 
     if (matchingTool) {
       this.toolCallManager.endToolCall(
@@ -325,7 +326,7 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
 
     results.push(createProgressEvent(`工具完成: ${event.tool_name}`))
     results.push(
-      createToolCallEndEvent(event.tool_name, event.output, event.output !== undefined)
+      createToolCallEndEvent(event.tool_name, event.output, event.output !== undefined, toolId)
     )
 
     return results

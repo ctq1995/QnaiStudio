@@ -11,14 +11,15 @@
  * - Edit 工具优化显示
  */
 
-import { useMemo, memo, useState, useCallback, useRef } from 'react';
+import { useMemo, memo, useState, useCallback, useRef, useDeferredValue } from 'react';
 import React from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { clsx } from 'clsx';
 import type { ChatMessage, UserChatMessage, AssistantChatMessage, ContentBlock, TextBlock, ToolCallBlock } from '../../types';
-import { useEventChatStore } from '../../stores';
+import { useConfigStore, useEventChatStore } from '../../stores';
 import { getToolConfig, extractToolKeyInfo } from '../../utils/toolConfig';
 import { markdownCache } from '../../utils/cache';
+import { useThrottle } from '../../hooks/useThrottle';
 import {
   formatDuration,
   calculateDuration,
@@ -29,12 +30,16 @@ import {
   type GrepMatch,
   type GrepOutputData
 } from '../../utils/toolSummary';
-import { Check, XCircle, Loader2, AlertTriangle, Play, ChevronDown, ChevronRight, Circle, FileSearch, FolderOpen, Code } from 'lucide-react';
+import { Check, XCircle, Loader2, AlertTriangle, Play, ChevronDown, ChevronRight, Circle, FileSearch, FolderOpen, Code, FileDiff, UserRound } from 'lucide-react';
 import { ChatNavigator } from './ChatNavigator';
 import { groupConversationRounds } from '../../utils/conversationRounds';
 import { splitMarkdownWithMermaid } from '../../utils/markdown';
 import { MermaidDiagram } from './MermaidDiagram';
 import { extractCodeBlocks, replaceCodeBlocksWithPlaceholders, codeBlockToReact } from '../../utils/markdown-enhanced';
+import { DiffViewer } from '../Diff/DiffViewer';
+import { BRAND_SHORT_NAME, BRAND_TAGLINE } from '../../constants/brand';
+import { isEditTool, extractEditDiff } from '../../utils/diffExtractor';
+import { getEngineLabel } from '../../utils/engineLabels';
 
 /** Markdown 渲染器（使用缓存优化） */
 function formatContent(content: string): string {
@@ -44,7 +49,7 @@ function formatContent(content: string): string {
 /** 用户消息组件 */
 const UserBubble = memo(function UserBubble({ message }: { message: UserChatMessage }) {
   return (
-    <div className="flex justify-end my-2">
+    <div className="flex justify-end my-2 gap-2 items-end">
       <div className="max-w-[85%] px-4 py-3 rounded-2xl
                   bg-gradient-to-br from-primary to-primary-600
                   text-white shadow-glow">
@@ -52,23 +57,46 @@ const UserBubble = memo(function UserBubble({ message }: { message: UserChatMess
           {message.content}
         </div>
       </div>
+      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0">
+        <UserRound className="w-4 h-4" />
+      </div>
     </div>
   );
 });
 
-/** 文本内容块组件（支持 Mermaid 渲染 + 代码高亮） */
-const TextBlockRenderer = memo(function TextBlockRenderer({ block }: { block: TextBlock }) {
-  // 将 Markdown 拆分为多个片段（文本和 Mermaid 交替）
+/** 文本内容块组件（支持 Mermaid 渲染 + 代码高亮 + 双语翻译）
+ * 
+ * 性能优化策略：
+ * 1. 流式输出时使用节流（而非防抖），确保固定间隔渲染，提供更好的实时性
+ * 2. 流式阶段显示简化版内容（纯文本），避免复杂 markdown 渲染
+ * 3. 使用 useDeferredValue 降低渲染优先级，保持 UI 响应
+ * 4. 流式结束后显示完整渲染结果
+ */
+const TextBlockRenderer = memo(function TextBlockRenderer({
+  block,
+  isStreaming = false
+}: {
+  block: TextBlock;
+  isStreaming?: boolean;
+}) {
+  const throttledContent = useThrottle(block.content, isStreaming ? 200 : 0);
+  const deferredContent = useDeferredValue(throttledContent);
   const parts = useMemo(() => splitMarkdownWithMermaid(block.content), [block.content]);
+
+  if (isStreaming) {
+    return (
+      <div className="prose prose-invert prose-sm max-w-none">
+        <StreamingTextContent content={deferredContent} />
+      </div>
+    );
+  }
 
   return (
     <div className="prose prose-invert prose-sm max-w-none">
       {parts.map((part, partIndex) => {
         if (part.type === 'text') {
-          // 渲染普通 Markdown 文本（包含代码高亮）
           return <TextPartRenderer key={`text-${partIndex}`} content={part.content} />;
         } else {
-          // 渲染 Mermaid 图表
           return (
             <MermaidDiagram
               key={`mermaid-${partIndex}`}
@@ -83,74 +111,156 @@ const TextBlockRenderer = memo(function TextBlockRenderer({ block }: { block: Te
 });
 
 /**
- * 文本部分渲染器（支持代码高亮）
+ * 流式文本内容渲染器 - 极简版，最大化性能
+ * 
+ * 优化策略：
+ * 1. 单节点渲染：不按行分割，直接渲染整个文本
+ * 2. 使用 CSS white-space: pre-wrap 保持换行格式
+ * 3. 仅做最小化的代码块标识符高亮
+ * 4. 避免所有不必要的 useMemo/map 操作
+ * 
+ * 性能关键（2026-03-09 更新）：
+ * - 不使用正则表达式（正则在长文本上性能差）
+ * - 使用 lastIndexOf 从末尾搜索代码块标记（O(n) 但从末尾开始，流式场景更高效）
+ * - 限制处理范围：只处理最后 2000 字符中的代码块标记
+ * - 避免对整个长文本进行多次遍历
+ */
+const StreamingTextContent = memo(function StreamingTextContent({ content }: { content: string }) {
+  // 如果内容为空，渲染占位符
+  if (!content) {
+    return <span className="text-text-muted">...</span>;
+  }
+
+  // 性能优化：对于长文本，只处理最后 2000 字符
+  // 因为流式输出中，代码块标记通常出现在最新内容中
+  const SEARCH_WINDOW = 2000;
+  const searchStart = Math.max(0, content.length - SEARCH_WINDOW);
+  const searchRegion = content.slice(searchStart);
+  
+  // 快速检测：从末尾搜索代码块标记
+  const lastCodeBlockInRegion = searchRegion.lastIndexOf('```');
+  
+  // 如果搜索区域内没有代码块标记，直接渲染纯文本（最快路径）
+  if (lastCodeBlockInRegion === -1) {
+    return (
+      <span className="whitespace-pre-wrap break-words">
+        {content}
+      </span>
+    );
+  }
+
+  // 将区域内的相对位置转换为全局位置
+  const firstCodeBlock = searchStart + lastCodeBlockInRegion;
+
+  // 构建渲染结果
+  const parts: React.ReactNode[] = [];
+  let keyIndex = 0;
+  const MAX_PARTS = 10; // 减少最大片段数，避免创建过多节点
+
+  // 添加代码块标记之前的所有文本（作为一个整体）
+  if (firstCodeBlock > 0) {
+    parts.push(
+      <span key={`text-${keyIndex++}`}>
+        {content.slice(0, firstCodeBlock)}
+      </span>
+    );
+  }
+
+  // 处理代码块标记
+  let remaining = content.slice(firstCodeBlock);
+  
+  while (remaining.length > 0 && keyIndex < MAX_PARTS) {
+    const idx = remaining.indexOf('```');
+    
+    if (idx === -1) {
+      parts.push(
+        <span key={`text-${keyIndex++}`}>
+          {remaining}
+        </span>
+      );
+      break;
+    }
+
+    // 添加代码块标记之前的普通文本
+    if (idx > 0) {
+      parts.push(
+        <span key={`text-${keyIndex++}`}>
+          {remaining.slice(0, idx)}
+        </span>
+      );
+    }
+
+    // 找到代码块标记的结束位置（到下一个换行或行尾）
+    let endOfMarker = 3;
+    const afterMarker = remaining.slice(idx + 3);
+    
+    // 查找语言标识符结束位置
+    for (let i = 0; i < afterMarker.length && i < 30; i++) {
+      const char = afterMarker[i];
+      if (char === '\n' || char === '\r') {
+        endOfMarker = 3 + i + 1;
+        break;
+      }
+      if (!/[a-zA-Z0-9_+-]/.test(char)) {
+        endOfMarker = 3 + i;
+        break;
+      }
+      endOfMarker = 3 + i + 1;
+    }
+
+    // 添加代码块标记（带样式）
+    const marker = remaining.slice(idx, idx + endOfMarker);
+    parts.push(
+      <span key={`code-${keyIndex++}`} className="text-text-muted font-mono text-xs">
+        {marker}
+      </span>
+    );
+
+    remaining = remaining.slice(idx + endOfMarker);
+  }
+
+  // 添加剩余内容
+  if (remaining.length > 0) {
+    parts.push(
+      <span key={`text-remaining`}>
+        {remaining}
+      </span>
+    );
+  }
+
+  return <span className="whitespace-pre-wrap break-words">{parts}</span>;
+});
+
+/**
+ * 文本部分渲染器（支持代码高亮 + 双语翻译）
  */
 const TextPartRenderer = memo(function TextPartRenderer({ content }: { content: string }) {
-  // 渲染 Markdown 为 HTML
   const formattedHTML = useMemo(() => formatContent(content), [content]);
+  const codeBlocks = useMemo(() => extractCodeBlocks(formattedHTML), [formattedHTML]);
+  const { processedHTML } = useMemo(() => replaceCodeBlocksWithPlaceholders(formattedHTML, codeBlocks), [formattedHTML, codeBlocks]);
 
-  // 提取代码块
-  const codeBlocks = useMemo(() => {
-    const blocks = extractCodeBlocks(formattedHTML);
-    return blocks;
-  }, [formattedHTML]);
-
-  // 替换代码块为占位符
-  const { processedHTML } = useMemo(() => {
-    return replaceCodeBlocksWithPlaceholders(formattedHTML, codeBlocks);
-  }, [formattedHTML, codeBlocks]);
-
-  // 分割 HTML 为多个部分（代码块和普通文本）
   const segments = useMemo(() => {
-    const segments: Array<{ type: 'html' | 'code'; content: string; codeBlockIndex?: number }> = [];
+    const segs = [];
     let lastIndex = 0;
-
-    // 按 __CODE_BLOCK_X__ 占位符分割
     const regex = /__CODE_BLOCK_(\d+)__/g;
     let match;
-
     while ((match = regex.exec(processedHTML)) !== null) {
-      const placeholder = match[0];
       const blockIndex = parseInt(match[1], 10);
       const placeholderStart = match.index;
-
-      // 添加占位符之前的 HTML
-      if (placeholderStart > lastIndex) {
-        segments.push({
-          type: 'html',
-          content: processedHTML.slice(lastIndex, placeholderStart),
-        });
-      }
-
-      // 添加代码块引用
-      segments.push({
-        type: 'code',
-        content: placeholder,
-        codeBlockIndex: blockIndex,
-      });
-
-      lastIndex = placeholderStart + placeholder.length;
+      if (placeholderStart > lastIndex) segs.push({ type: 'html', content: processedHTML.slice(lastIndex, placeholderStart) });
+      segs.push({ type: 'code', content: match[0], codeBlockIndex: blockIndex });
+      lastIndex = placeholderStart + match[0].length;
     }
-
-    // 添加剩余的 HTML
-    if (lastIndex < processedHTML.length) {
-      segments.push({
-        type: 'html',
-        content: processedHTML.slice(lastIndex),
-      });
-    }
-
-    return segments;
+    if (lastIndex < processedHTML.length) segs.push({ type: 'html', content: processedHTML.slice(lastIndex) });
+    return segs;
   }, [processedHTML]);
 
   return (
     <>
       {segments.map((segment, index) => {
         if (segment.type === 'html') {
-          // 渲染普通 HTML
           return <div key={`html-${index}`} dangerouslySetInnerHTML={{ __html: segment.content }} />;
         } else {
-          // 渲染代码块组件
           return codeBlockToReact(codeBlocks[segment.codeBlockIndex!], index);
         }
       })}
@@ -241,6 +351,7 @@ const GrepOutputRenderer = memo(function GrepOutputRenderer({
 }: {
   data: GrepOutputData;
 }) {
+  
   return (
     <div className="space-y-2">
       {/* 匹配项列表 */}
@@ -252,7 +363,7 @@ const GrepOutputRenderer = memo(function GrepOutputRenderer({
       {/* 超过20个提示 */}
       {data.total > 20 && (
         <div className="text-xs text-text-tertiary text-center py-1">
-          ...还有 {data.total - 20} 个匹配项
+          {`...还有 ${data.total - 20} 个匹配项`}
         </div>
       )}
     </div>
@@ -407,6 +518,7 @@ function getTodoStatusIcon(status: TodoItem['status']): React.ReactElement {
 const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { block: ToolCallBlock }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showFullOutput, setShowFullOutput] = useState(false);
+  const [showToolDetails, setShowToolDetails] = useState(false);
 
   // 获取工具配置
   const toolConfig = useMemo(() => getToolConfig(block.name), [block.name]);
@@ -432,6 +544,37 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
     }
     return null;
   }, [block.name, block.output, block.status, block.input]);
+
+  // Edit 工具的简化输出提示
+  const editOutputSummary = useMemo(() => {
+    if (!isEditTool(block.name) || block.status !== 'completed') {
+      return null;
+    }
+
+    if (block.output) {
+      const output = block.output.toLowerCase();
+      // 成功
+      if (output.includes('has been updated') ||
+          output.includes('successfully edited') ||
+          output.includes('edited successfully')) {
+        return {
+          type: 'success',
+          text: '文件已成功更新'
+        };
+      }
+      // 失败
+      if (output.includes('failed') ||
+          output.includes('error') ||
+          output.includes('could not')) {
+        return {
+          type: 'error',
+          text: '文件更新失败'
+        };
+      }
+    }
+
+    return null;
+  }, [block.name, block.status, block.output, block.error]);
 
   // 解析 TodoWrite 数据
   const todoData = useMemo(() => {
@@ -467,6 +610,14 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
   const hasOutput = block.output && block.output.length > 0;
   const hasError = block.status === 'failed' && block.error;
   const canExpand = hasInput || hasOutput || hasError;
+
+  // 是否显示 Diff 按钮（Edit 工具且有 Diff 数据）
+  const diffData = useMemo(() => {
+    if (!isEditTool(block.name) || block.status !== 'completed') return null;
+    return extractEditDiff(block);
+  }, [block.name, block.status, block.input]);
+
+  const showDiffButton = diffData !== null;
 
   // 是否使用专用输出渲染器
   const useCustomRenderer = grepData !== null;
@@ -566,7 +717,7 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
               ))}
               {todoData.total > 2 && (
                 <div className="text-xs text-text-muted">
-                  ...还有 {todoData.total - 2} 个任务
+                  {`...还有 ${todoData.total - 2} 个任务`}
                 </div>
               )}
             </div>
@@ -599,15 +750,29 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs text-text-muted font-mono">{block.name}</span>
             <div className="text-xs text-text-tertiary flex gap-3">
-              <span>开始: {new Date(block.startedAt).toLocaleTimeString('zh-CN')}</span>
+              <span>{`开始: ${new Date(block.startedAt).toLocaleTimeString('zh-CN')}`}</span>
               {block.completedAt && (
-                <span>完成: {new Date(block.completedAt).toLocaleTimeString('zh-CN')}</span>
+                <span>{`完成: ${new Date(block.completedAt).toLocaleTimeString('zh-CN')}`}</span>
               )}
             </div>
           </div>
 
-          {/* 输入参数 */}
-          {hasInput && (
+          {/* Edit 工具：直接显示 Diff */}
+          {showDiffButton && diffData && (
+            <div className="mb-3">
+              <div className="text-xs text-text-muted mb-2 flex items-center gap-1.5">
+                <FileDiff className="w-3 h-3" />
+                {'文件差异'}
+              </div>
+              <DiffViewer
+                oldContent={diffData.oldContent}
+                newContent={diffData.newContent}
+              />
+            </div>
+          )}
+
+          {/* 非Edit工具或无Diff：显示输入参数 */}
+          {!showDiffButton && hasInput && (
             <div className="mb-3">
               <div className="text-xs text-text-muted mb-1.5 flex items-center gap-1.5">
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -625,14 +790,31 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
             </div>
           )}
 
-          {/* 输出结果 */}
-          {hasOutput && (
+          {/* Edit 工具：简化输出提示 */}
+          {editOutputSummary && (
+            <div className="mb-3">
+              <div className={clsx(
+                'text-xs flex items-center gap-1.5',
+                editOutputSummary.type === 'success' ? 'text-success' : 'text-error'
+              )}>
+                {editOutputSummary.type === 'success' ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5" />
+                )}
+                {editOutputSummary.text}
+              </div>
+            </div>
+          )}
+
+          {/* 非Edit工具：完整输出结果 */}
+          {!isEditTool(block.name) && hasOutput && (
             <div className="mb-3">
               <div className="text-xs text-text-muted mb-1.5 flex items-center gap-1.5">
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                输出结果
+                {'输出结果'}
                 {outputNeedsExpand && !useCustomRenderer && (
                   <button
                     onClick={() => setShowFullOutput(!showFullOutput)}
@@ -652,9 +834,47 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
                   {showFullOutput
                     ? displayOutput
                     : (displayOutput.length > 1000
-                      ? displayOutput.slice(0, 1000) + '\n... (内容过长，已截断，点击"展开全部"查看)'
+                      ? displayOutput.slice(0, 1000) + '\n... (' + '内容过长，已截断，点击展开全部查看' + ')'
                       : displayOutput)}
                 </pre>
+              )}
+            </div>
+          )}
+
+          {/* Edit 工具：工具详情折叠区域 */}
+          {isEditTool(block.name) && (hasInput || hasOutput) && (
+            <div className="mb-3">
+              <div
+                onClick={() => setShowToolDetails(!showToolDetails)}
+                className="text-xs text-text-tertiary hover:text-text-primary cursor-pointer flex items-center gap-1 select-none"
+              >
+                <ChevronRight
+                  className={clsx(
+                    'w-3 h-3 transition-transform',
+                    showToolDetails && 'rotate-90'
+                  )}
+                />
+                {'工具详情'}
+              </div>
+              {showToolDetails && (
+                <div className="mt-2 space-y-2">
+                  {hasInput && (
+                    <div>
+                      <div className="text-xs text-text-muted mb-1">{'输入参数'}</div>
+                      <pre className="text-xs text-text-secondary bg-background-surface rounded p-2.5 overflow-x-auto font-mono">
+                        {formatInput(block.input)}
+                      </pre>
+                    </div>
+                  )}
+                  {hasOutput && (
+                    <div>
+                      <div className="text-xs text-text-muted mb-1">{'输出结果'}</div>
+                      <pre className="text-xs text-text-secondary bg-background-surface rounded p-2.5 overflow-x-auto font-mono max-h-48 overflow-y-auto">
+                        {displayOutput}
+                      </pre>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -664,7 +884,7 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
             <div className="mb-3">
               <div className="text-xs text-error mb-1.5 flex items-center gap-1.5">
                 <XCircle className="w-3 h-3" />
-                错误信息
+                {'错误信息'}
               </div>
               <pre className="text-xs text-error bg-error-faint rounded p-2.5 overflow-x-auto font-mono">
                 {block.error}
@@ -683,7 +903,7 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
             </span>
             {duration && (
               <span className="text-xs text-text-tertiary">
-                耗时 {duration}
+                {`耗时 ${duration}`}
               </span>
             )}
           </div>
@@ -694,10 +914,10 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
 });
 
 /** 内容块渲染器 */
-function renderContentBlock(block: ContentBlock): React.ReactNode {
+function renderContentBlock(block: ContentBlock, isStreaming?: boolean): React.ReactNode {
   switch (block.type) {
     case 'text':
-      return <TextBlockRenderer key={`text-${block.content.slice(0, 20)}`} block={block} />;
+      return <TextBlockRenderer key={`text-${block.content.slice(0, 20)}`} block={block} isStreaming={isStreaming} />;
     case 'tool_call':
       return <ToolCallBlockRenderer key={block.id} block={block} />;
     default:
@@ -706,45 +926,42 @@ function renderContentBlock(block: ContentBlock): React.ReactNode {
 }
 
 /** 助手消息组件 - 使用内容块架构 */
-const AssistantBubble = memo(function AssistantBubble({ message }: { message: AssistantChatMessage }) {
+const AssistantBubble = memo(function AssistantBubble({
+  message,
+  engineLabel,
+}: {
+  message: AssistantChatMessage;
+  engineLabel: string;
+}) {
   const hasBlocks = message.blocks && message.blocks.length > 0;
 
   return (
     <div className="flex gap-3 my-2">
-      {/* Avatar */}
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary-600
                       flex items-center justify-center shadow-glow shrink-0">
         <span className="text-sm font-bold text-white">P</span>
       </div>
-
-      {/* 内容 */}
-      <div className="flex-1 space-y-1 min-w-0">
-        {/* 头部信息 */}
+      <div className="flex-1 space-y-1 min-w-0 max-w-[75%]">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-text-primary">Claude</span>
+          <span className="text-sm font-medium text-text-primary">{engineLabel}</span>
           <span className="text-xs text-text-tertiary">
             {new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
-
-        {/* 渲染内容块 */}
         {hasBlocks ? (
           <div className="space-y-1">
             {message.blocks.map((block, index) => (
               <div key={index}>
-                {renderContentBlock(block)}
+                {renderContentBlock(block, message.isStreaming)}
               </div>
             ))}
           </div>
         ) : message.content ? (
-          // 兼容旧格式（content 字符串）
           <div
             className="prose prose-invert prose-sm max-w-none"
             dangerouslySetInnerHTML={{ __html: formatContent(message.content) }}
           />
         ) : null}
-
-        {/* 流式光标 */}
         {message.isStreaming && (
           <span className="inline-flex ml-1">
             <span className="flex gap-0.5 items-end h-4">
@@ -758,32 +975,20 @@ const AssistantBubble = memo(function AssistantBubble({ message }: { message: As
     </div>
   );
 }, (prevProps, nextProps) => {
-  // 优化重渲染：使用浅比较代替深度序列化
-  // 比较关键属性：id、isStreaming、blocks 数量、最后一个块的内容长度
   const prevBlocks = prevProps.message.blocks;
   const nextBlocks = nextProps.message.blocks;
-
-  // 基础属性比较
+  if (prevProps.engineLabel !== nextProps.engineLabel) return false;
   if (prevProps.message.id !== nextProps.message.id) return false;
   if (prevProps.message.isStreaming !== nextProps.message.isStreaming) return false;
-
-  // blocks 数量不同，需要更新
   if (prevBlocks.length !== nextBlocks.length) return false;
-
-  // 对于流式消息，检查最后一个文本块的内容长度
-  // 这比 JSON.stringify 快得多，且能捕获大部分更新
   if (nextProps.message.isStreaming && prevBlocks.length > 0) {
     const lastPrev = prevBlocks[prevBlocks.length - 1];
     const lastNext = nextBlocks[nextBlocks.length - 1];
-
     if (lastPrev.type === 'text' && lastNext.type === 'text') {
-      // 内容长度变化需要更新
       if (lastPrev.content.length !== lastNext.content.length) return false;
     } else if (lastPrev.type !== lastNext.type) {
       return false;
     }
-
-    // 检查工具调用块的状态变化
     for (let i = 0; i < prevBlocks.length; i++) {
       const pb = prevBlocks[i];
       const nb = nextBlocks[i];
@@ -794,8 +999,6 @@ const AssistantBubble = memo(function AssistantBubble({ message }: { message: As
       }
     }
   }
-
-  // 非流式消息，认为没有变化
   return true;
 });
 
@@ -809,12 +1012,12 @@ const SystemBubble = memo(function SystemBubble({ content }: { content: string }
 });
 
 /** 消息渲染器 */
-function renderChatMessage(message: ChatMessage): React.ReactNode {
+function renderChatMessage(message: ChatMessage, engineLabel: string): React.ReactNode {
   switch (message.type) {
     case 'user':
       return <UserBubble key={message.id} message={message} />;
     case 'assistant':
-      return <AssistantBubble key={message.id} message={message} />;
+      return <AssistantBubble key={message.id} message={message} engineLabel={engineLabel} />;
     case 'system':
       return <SystemBubble key={message.id} content={(message as any).content} />;
     default:
@@ -824,6 +1027,7 @@ function renderChatMessage(message: ChatMessage): React.ReactNode {
 
 /** 空状态组件 */
 const EmptyState = memo(function EmptyState() {
+  
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4">
       {/* Logo 图标 */}
@@ -833,12 +1037,12 @@ const EmptyState = memo(function EmptyState() {
 
       {/* 标题 */}
       <h1 className="text-2xl font-semibold text-text-primary mb-2">
-        Polaris
+        {BRAND_SHORT_NAME}
       </h1>
 
       {/* 描述 */}
       <p className="text-text-secondary mb-8 max-w-md">
-        智能编程助手，让代码编辑更高效
+        {BRAND_TAGLINE}
       </p>
 
       {/* 功能列表 */}
@@ -847,25 +1051,25 @@ const EmptyState = memo(function EmptyState() {
           <div className="w-8 h-8 rounded-lg bg-success-faint flex items-center justify-center">
             <FolderOpen className="w-4 h-4 text-success" />
           </div>
-          <span className="text-xs text-text-tertiary">文件管理</span>
+          <span className="text-xs text-text-tertiary">{'文件上下文'}</span>
         </div>
         <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-background-surface border border-border shadow-soft hover:shadow-medium hover:border-border-strong transition-all">
           <div className="w-8 h-8 rounded-lg bg-warning-faint flex items-center justify-center">
             <Code className="w-4 h-4 text-warning" />
           </div>
-          <span className="text-xs text-text-tertiary">代码编辑</span>
+          <span className="text-xs text-text-tertiary">{'代码协作'}</span>
         </div>
         <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-background-surface border border-border shadow-soft hover:shadow-medium hover:border-border-strong transition-all">
           <div className="w-8 h-8 rounded-lg bg-primary-faint flex items-center justify-center">
             <FileSearch className="w-4 h-4 text-primary" />
           </div>
-          <span className="text-xs text-text-tertiary">智能分析</span>
+          <span className="text-xs text-text-tertiary">{'智能分析'}</span>
         </div>
       </div>
 
       {/* 提示 */}
       <p className="text-text-tertiary text-sm mt-8">
-        输入消息开始对话
+        {'输入消息开始新一轮协作。'}
       </p>
     </div>
   );
@@ -875,11 +1079,76 @@ const EmptyState = memo(function EmptyState() {
  * 增强版聊天消息列表组件
  *
  * 使用内容块架构渲染消息，工具调用穿插在文本中间
+ *
+ * 性能优化：
+ * - 流式阶段直接从 currentMessage 读取内容，不更新 messages 数组
+ * - 避免 50ms 一次的整个消息列表重渲染
  */
 export function EnhancedChatMessages() {
-  const { messages, archivedMessages, loadArchivedMessages } = useEventChatStore();
+  const { messages, archivedMessages, loadArchivedMessages, currentMessage, isStreaming } = useEventChatStore();
+  const currentEngineId = useConfigStore((state) => state.config?.defaultEngine);
+  const currentEngineLabel = useMemo(() => getEngineLabel(currentEngineId), [currentEngineId]);
 
-  const isEmpty = messages.length === 0;
+  // 性能优化：流式阶段合并 currentMessage 到消息列表
+  // 这样就不需要频繁更新 messages 数组，避免整个列表重渲染
+  // 使用 ref 缓存消息对象，避免每次 currentMessage 变化都创建新引用
+  const prevDisplayMessagesRef = useRef<ChatMessage[]>([]);
+  // 存储 lastContentRef 用于快速比较内容是否变化
+  const lastContentRef = useRef<{ id: string; contentLen: number } | null>(null);
+  
+  const displayMessages = useMemo(() => {
+    if (!currentMessage || !isStreaming) {
+      prevDisplayMessagesRef.current = messages;
+      lastContentRef.current = null;
+      return messages;
+    }
+
+    // 快速检查：如果 currentMessage 内容长度与上次相同，直接返回缓存
+    const lastBlock = currentMessage.blocks[currentMessage.blocks.length - 1];
+    const currentContentLen = lastBlock?.type === 'text' ? (lastBlock as any).content?.length || 0 : 0;
+    
+    if (
+      lastContentRef.current?.id === currentMessage.id &&
+      lastContentRef.current?.contentLen === currentContentLen
+    ) {
+      // 内容长度相同，直接返回缓存（避免创建新数组）
+      return prevDisplayMessagesRef.current;
+    }
+
+    // 更新缓存标记
+    lastContentRef.current = { id: currentMessage.id, contentLen: currentContentLen };
+
+    // 检查 currentMessage 是否已在 messages 中
+    const existingIndex = messages.findIndex(m => m.id === currentMessage.id);
+    
+    if (existingIndex >= 0) {
+      // 内容变化，创建新的消息数组，但复用不变的消息对象
+      const updated: ChatMessage[] = [
+        ...messages.slice(0, existingIndex),
+        {
+          ...messages[existingIndex],
+          blocks: currentMessage.blocks,
+          isStreaming: true,
+        } as AssistantChatMessage,
+        ...messages.slice(existingIndex + 1),
+      ];
+      prevDisplayMessagesRef.current = updated;
+      return updated;
+    } else {
+      // 添加到末尾
+      const newMessages: ChatMessage[] = [...messages, {
+        id: currentMessage.id,
+        type: 'assistant' as const,
+        blocks: currentMessage.blocks,
+        timestamp: new Date().toISOString(),
+        isStreaming: true,
+      }];
+      prevDisplayMessagesRef.current = newMessages;
+      return newMessages;
+    }
+  }, [messages, currentMessage, isStreaming]);
+
+  const isEmpty = displayMessages.length === 0;
   const hasArchive = archivedMessages.length > 0;
 
   // Virtuoso 引用，用于滚动控制
@@ -891,10 +1160,10 @@ export function EnhancedChatMessages() {
   // 当前可见的对话轮次索引
   const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
 
-  // 对话轮次分组
+  // 对话轮次分组（使用 displayMessages 包含流式消息）
   const conversationRounds = useMemo(() => {
-    return groupConversationRounds(messages);
-  }, [messages]);
+    return groupConversationRounds(displayMessages);
+  }, [displayMessages]);
 
   // 检测用户是否在底部附近（基于像素距离）
   const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
@@ -982,18 +1251,18 @@ export function EnhancedChatMessages() {
             <Virtuoso
               ref={virtuosoRef}
               style={{ height: '100%' }}
-              data={messages}
-              itemContent={(_index, item) => renderChatMessage(item)}
+              data={displayMessages}
+              itemContent={(_index, item) => renderChatMessage(item, currentEngineLabel)}
               components={{
                 EmptyPlaceholder: () => null,
                 Footer: () => <div style={{ height: '120px' }} />,
               }}
-              followOutput={autoScroll ? 'smooth' : false}
+              followOutput={autoScroll ? (isStreaming ? true : 'smooth') : false}
               atBottomStateChange={handleAtBottomStateChange}
               atBottomThreshold={150}
               rangeChanged={handleRangeChange}
               increaseViewportBy={{ top: 100, bottom: 300 }}
-              initialTopMostItemIndex={messages.length - 1}
+              initialTopMostItemIndex={displayMessages.length - 1}
             />
           )}
         </div>

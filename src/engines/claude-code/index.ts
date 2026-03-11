@@ -13,5 +13,23 @@ export * from './engine'
 // 导出 Session
 export * from './session'
 
-// 导出 Event Parser
-export * from './event-parser'
+// 导出 Event Parser（避免与其他引擎的 parseStreamEventLine 冲突）
+export {
+  ToolCallManager,
+  ClaudeEventParser,
+  parseStreamEventLine as parseClaudeStreamEventLine,
+  convertClaudeEventsToAIEvents,
+} from './event-parser'
+export type {
+  ClaudeStreamEvent,
+  SystemEvent,
+  AssistantEvent,
+  UserEvent,
+  TextDeltaEvent,
+  ToolStartEvent,
+  ToolEndEvent,
+  PermissionRequestEvent,
+  ErrorEvent,
+  SessionEndEvent,
+  MessageContent,
+} from './event-parser'

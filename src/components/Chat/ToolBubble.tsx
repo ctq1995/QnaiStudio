@@ -7,6 +7,7 @@
 import { memo, useState } from 'react';
 import { type ToolChatMessage } from '../../types';
 import { formatDuration } from '../../utils/toolSummary';
+import { getToolConfig } from '../../utils/toolConfig';
 import {
   IconRunning, IconCompleted, IconFailed, IconPartial,
   IconChevronRight, IconCopy
@@ -86,6 +87,7 @@ function formatValue(value: unknown): string {
 export const ToolBubble = memo(function ToolBubble({ message }: ToolBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const StatusIcon = getStatusIcon(message.status);
+  const toolConfig = getToolConfig(message.toolName);
 
   // 计算时长
   const duration = message.duration ||
@@ -98,11 +100,12 @@ export const ToolBubble = memo(function ToolBubble({ message }: ToolBubbleProps)
       {/* 工具消息主体 */}
       <div
         className={clsx(
-          "group flex items-start gap-2 px-3 py-2 rounded-lg border transition-all",
+          "group flex items-start gap-2 px-3 py-2 rounded-lg border border-l-4 transition-all",
           message.status === 'running' && "bg-warning-faint border-warning/30",
           message.status === 'completed' && "bg-success-faint border-success/30",
           message.status === 'failed' && "bg-error-faint border-error/30",
           message.status === 'pending' && "bg-background-surface border-border",
+          toolConfig.borderColor,
         )}
       >
         {/* 状态图标 */}
@@ -114,7 +117,10 @@ export const ToolBubble = memo(function ToolBubble({ message }: ToolBubbleProps)
 
         {/* 摘要内容 */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={clsx('rounded-md px-1.5 py-0.5 text-xs font-medium', toolConfig.bgColor, toolConfig.color)}>
+              {toolConfig.label}
+            </span>
             <span className={clsx(
               "text-sm",
               message.status === 'running' ? "text-text-primary" : "text-text-secondary"
@@ -160,8 +166,8 @@ export const ToolBubble = memo(function ToolBubble({ message }: ToolBubbleProps)
           {/* 输入参数 */}
           {message.input && Object.keys(message.input).length > 0 && (
             <div className="bg-background-secondary rounded-lg border border-border-subtle overflow-hidden">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-background-tertiary">
-                <span className="text-xs text-text-subtle">输入参数</span>
+              <div className={clsx('flex items-center justify-between px-3 py-2 border-b border-border-subtle', toolConfig.bgColor)}>
+                <span className={clsx('text-xs font-medium', toolConfig.color)}>输入参数</span>
                 <button
                   onClick={() => copyToClipboard(formatValue(message.input))}
                   className="flex items-center gap-1 text-xs text-text-muted hover:text-text transition-colors"
@@ -184,8 +190,8 @@ export const ToolBubble = memo(function ToolBubble({ message }: ToolBubbleProps)
                 ? "bg-error-faint border-error/30"
                 : "bg-background-secondary border-border-subtle"
             )}>
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-background-tertiary">
-                <span className="text-xs text-text-subtle">执行结果</span>
+              <div className={clsx('flex items-center justify-between px-3 py-2 border-b border-border-subtle', message.status === 'failed' ? 'bg-error/10' : toolConfig.bgColor)}>
+                <span className={clsx('text-xs font-medium', message.status === 'failed' ? 'text-error' : toolConfig.color)}>执行结果</span>
                 <button
                   onClick={() => copyToClipboard(message.output || '')}
                   className="flex items-center gap-1 text-xs text-text-muted hover:text-text transition-colors"

@@ -48,7 +48,7 @@ export function FileSuggestion({
   return (
     <div
       ref={containerRef}
-      className="fixed z-50 bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
+      className="fixed z-[200] bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
       style={{
         top: `${position.top}px`,
         left: `${position.left}px`,
@@ -146,7 +146,7 @@ export function CommandSuggestion({
   return (
     <div
       ref={containerRef}
-      className="fixed z-50 bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
+      className="fixed z-[200] bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
       style={{
         top: `${position.top}px`,
         left: `${position.left}px`,
@@ -214,7 +214,7 @@ export function WorkspaceSuggestion({
   return (
     <div
       ref={containerRef}
-      className="fixed z-50 bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
+      className="fixed z-[200] bg-background-surface border border-border rounded-lg shadow-lg max-h-60 overflow-auto"
       style={{
         top: `${position.top}px`,
         left: `${position.left}px`,

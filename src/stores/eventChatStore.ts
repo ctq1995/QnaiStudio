@@ -1,1445 +1,12262 @@
-/**
- * 事件驱动的 Chat Store
- *
- * 完全基于 AIEvent 和 EventBus 的聊天状态管理。
- * 支持新的分层对话流消息类型（ToolMessage、ToolGroupMessage）。
- *
- * 架构说明：
- * 1. Tauri 'chat-event' → convertStreamEventToAIEvents() → EventBus.emit()
- * 2. EventBus → DeveloperPanel（调试面板）
- * 3. 本地处理逻辑 → UI 更新
- */
-
-import { create } from 'zustand'
-import type { ChatMessage, AssistantChatMessage, UserChatMessage, SystemChatMessage, ContentBlock, ToolCallBlock, ToolStatus } from '../types'
-import type { StreamEvent } from '../types/chat'
-import type { AIEvent } from '../ai-runtime'
-import { useToolPanelStore } from './toolPanelStore'
-import { useWorkspaceStore } from './workspaceStore'
-import { useConfigStore } from './configStore'
-import {
-  generateToolSummary,
-  calculateDuration,
-} from '../utils/toolSummary'
-import { parseWorkspaceReferences, buildSystemPrompt } from '../services/workspaceReference'
-import { getEventBus } from '../ai-runtime'
-import { TokenBuffer } from '../utils/tokenBuffer'
-import { getIFlowHistoryService } from '../services/iflowHistoryService'
-import { getClaudeCodeHistoryService } from '../services/claudeCodeHistoryService'
-
-/** 最大保留消息数量 */
-const MAX_MESSAGES = 500
-
-/** 消息保留阈值 */
-const MESSAGE_ARCHIVE_THRESHOLD = 550
-
-/** 本地存储键 */
-const STORAGE_KEY = 'event_chat_state_backup'
-const STORAGE_VERSION = '5' // 版本升级：添加历史管理功能
-
-/** 会话历史存储键 */
-const SESSION_HISTORY_KEY = 'event_chat_session_history'
-/** 最大会话历史数量 */
-const MAX_SESSION_HISTORY = 50
-
-/**
- * 历史会话记录（localStorage 存储）
- */
-interface HistoryEntry {
-  id: string
-  title: string
-  timestamp: string
-  messageCount: number
-  engineId: 'claude-code' | 'iflow'
-  data: {
-    messages: ChatMessage[]
-    archivedMessages: ChatMessage[]
-  }
-}
-
-/**
- * 统一的历史条目（包含 localStorage、IFlow 和 Claude Code 原生的会话）
- */
-export interface UnifiedHistoryItem {
-  id: string
-  title: string
-  timestamp: string
-  messageCount: number
-  engineId: 'claude-code' | 'iflow'
-  source: 'local' | 'iflow' | 'claude-code-native'
-  fileSize?: number
-  inputTokens?: number
-  outputTokens?: number
-}
-
-// ============================================================================
-// 辅助函数：解析 IFlow/Claude Code 的消息内容格式
-// ============================================================================
-
-/**
- * 从消息内容中提取纯文本
- *
- * IFlow 格式：content 是数组，包含 text 和 tool_use 块
- * Claude Code 格式：content 可能是字符串或数组
- */
-function extractTextFromContent(content: unknown): string {
-  if (typeof content === 'string') {
-    return content
-  }
-
-  if (Array.isArray(content)) {
-    const texts: string[] = []
-    for (const item of content) {
-      if (item && typeof item === 'object') {
-        if ('type' in item && item.type === 'text' && 'text' in item) {
-          texts.push(String(item.text))
-        }
-      }
-    }
-    return texts.join('')
-  }
-
-  return ''
-}
-
-/**
- * 从消息内容中提取工具调用
- *
- * IFlow 格式：content 数组中的 tool_use 块
- */
-interface ToolUse {
-  id: string
-  name: string
-  input: unknown
-}
-
-function extractToolUsesFromContent(content: unknown): ToolUse[] {
-  const toolUses: ToolUse[] = []
-
-  if (Array.isArray(content)) {
-    for (const item of content) {
-      if (item && typeof item === 'object') {
-        if ('type' in item && item.type === 'tool_use') {
-          toolUses.push({
-            id: String(item.id || crypto.randomUUID()),
-            name: String(item.name || 'unknown'),
-            input: item.input,
-          })
-        }
-      }
-    }
-  }
-
-  return toolUses
-}
-
-/**
- * 从 user 消息中提取工具结果
- *
- * Claude Code 格式：user 消息中包含 tool_result 块
- */
-interface ToolResult {
-  tool_use_id: string
-  content: string
-  is_error?: boolean
-}
-
-function extractToolResultsFromContent(content: unknown): ToolResult[] {
-  const results: ToolResult[] = []
-
-  if (Array.isArray(content)) {
-    for (const item of content) {
-      if (item && typeof item === 'object') {
-        if ('type' in item && item.type === 'tool_result' && 'tool_use_id' in item) {
-          results.push({
-            tool_use_id: String(item.tool_use_id),
-            content: String(item.content || ''),
-            is_error: item.is_error === true,
-          })
-        }
-      }
-    }
-  }
-
-  return results
-}
-
-/**
- * 当前正在构建的 Assistant 消息
- */
-interface CurrentAssistantMessage {
-  id: string
-  blocks: ContentBlock[]
-  isStreaming: true
-}
-
-// ============================================================================
-// 统一事件转换层：StreamEvent → AIEvent
-// ============================================================================
-
-/**
- * 将 Tauri 的 StreamEvent 转换为标准的 AIEvent 数组
- *
- * 这是事件转换的统一入口，所有 StreamEvent 都通过这里转换为 AIEvent。
- * 转换后的事件会：
- * 1. 通过 EventBus 分发给所有订阅者（如 DeveloperPanel）
- * 2. 同时在本地进行状态更新
- */
-function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId: string | null): AIEvent[] {
-  const events: AIEvent[] = []
-
-  switch (streamEvent.type) {
-    case 'system': {
-      // Claude Code 的 system 事件可能包含 session_id
-      const systemEvent = streamEvent as { type: 'system'; subtype?: string; session_id?: string; extra?: { message?: string } }
-      if (systemEvent.session_id) {
-        events.push({ type: 'session_start', sessionId: systemEvent.session_id })
-      }
-
-      // 处理进度消息
-      if (systemEvent.subtype === 'progress' || systemEvent.extra?.message) {
-        events.push({
-          type: 'progress',
-          message: systemEvent.extra?.message || systemEvent.subtype,
-        })
-      }
-      break
-    }
-
-    case 'session_start': {
-      if (streamEvent.sessionId) {
-        events.push({ type: 'session_start', sessionId: streamEvent.sessionId })
-      }
-      break
-    }
-
-    case 'session_end':
-    case 'result': {
-      events.push({
-        type: 'session_end',
-        sessionId: sessionId || 'unknown',
-        reason: 'completed',
-      })
-      break
-    }
-
-    case 'text_delta': {
-      events.push({ type: 'token', value: streamEvent.text || '' })
-      break
-    }
-
-    case 'assistant': {
-      if (streamEvent.message?.content) {
-        // 提取文本内容
-        const content = extractTextFromContent(streamEvent.message.content)
-        if (content) {
-          events.push({
-            type: 'assistant_message',
-            content,
-            isDelta: false,
-          })
-        }
-
-        // 提取工具调用
-        const toolUses = extractToolUsesFromContent(streamEvent.message.content)
-        for (const toolUse of toolUses) {
-          // 工具调用开始事件
-          events.push({
-            type: 'tool_call_start',
-            callId: toolUse.id,
-            tool: toolUse.name,
-            args: toolUse.input as Record<string, unknown>,
-          })
-        }
-      }
-      break
-    }
-
-    case 'user': {
-      if (streamEvent.message?.content) {
-        // 处理工具结果
-        const toolResults = extractToolResultsFromContent(streamEvent.message.content)
-        for (const result of toolResults) {
-          events.push({
-            type: 'tool_call_end',
-            callId: result.tool_use_id,
-            tool: result.tool_use_id, // 使用 tool_use_id 作为工具名
-            result: result.content,
-            success: !result.is_error,
-          })
-        }
-      }
-      break
-    }
-
-    case 'tool_start': {
-      events.push({
-        type: 'tool_call_start',
-        callId: streamEvent.toolUseId,
-        tool: streamEvent.toolName || 'unknown',
-        args: streamEvent.input as Record<string, unknown>,
-      })
-      events.push({
-        type: 'progress',
-        message: `调用工具: ${streamEvent.toolName}`,
-      })
-      break
-    }
-
-    case 'tool_end': {
-      events.push({
-        type: 'tool_call_end',
-        callId: streamEvent.toolUseId,
-        tool: streamEvent.toolName || 'unknown',
-        result: streamEvent.output,
-        success: streamEvent.output !== undefined,
-      })
-      events.push({
-        type: 'progress',
-        message: `工具完成: ${streamEvent.toolName}`,
-      })
-      break
-    }
-
-    case 'error': {
-      events.push({
-        type: 'error',
-        error: streamEvent.error || '未知错误',
-      })
-      break
-    }
-
-    case 'permission_request': {
-      events.push({
-        type: 'progress',
-        message: '等待权限确认...',
-      })
-      break
-    }
-
-    default: {
-      const unknownEvent = streamEvent as { type: string }
-      console.log('[EventChatStore] 未转换的事件类型:', unknownEvent.type)
-      break
-    }
-  }
-
-  return events
-}
-
-// ============================================================================
-// 统一状态更新层：AIEvent → 本地状态
-// ============================================================================
-
-/**
- * 处理 AIEvent 更新本地状态
- *
- * 这是统一的状态更新入口，所有 AIEvent 都通过这里更新本地状态。
- * 与 convertStreamEventToAIEvents() 配合使用，实现事件流统一处理。
- *
- * 设计说明：
- * - 只处理与本地状态相关的 AIEvent
- * - 不再直接处理 StreamEvent，避免重复逻辑
- * - 与 EventBus 分离，Store 只负责状态管理
- *
- * @param event 要处理的 AIEvent
- * @param storeSet Zustand 的 set 函数
- * @param storeGet Zustand 的 get 函数
- */
-function handleAIEvent(
-  event: AIEvent,
-  storeSet: (partial: Partial<EventChatState> | ((state: EventChatState) => Partial<EventChatState>)) => void,
-  storeGet: () => EventChatState
-): void {
-  const state = storeGet()
-
-  switch (event.type) {
-    case 'session_start':
-      storeSet({ conversationId: event.sessionId, isStreaming: true })
-      console.log('[EventChatStore] Session started:', event.sessionId)
-      useToolPanelStore.getState().clearTools()
-      break
-
-    case 'session_end':
-      state.finishMessage()
-      storeSet({ isStreaming: false, progressMessage: null })
-      console.log('[EventChatStore] Session ended:', event.reason)
-      break
-
-    case 'token':
-      state.appendTextBlock(event.value)
-      break
-
-    case 'assistant_message':
-      state.appendTextBlock(event.content)
-      // 注意：工具调用会通过独立的 tool_call_start 事件处理，不在这里处理
-      break
-
-    case 'tool_call_start':
-      state.appendToolCallBlock(
-        event.callId || crypto.randomUUID(),
-        event.tool,
-        event.args
-      )
-      break
-
-    case 'tool_call_end':
-      if (!event.callId) {
-        console.warn('[EventChatStore] tool_call_end 事件缺少 callId，工具状态无法更新:', event.tool)
-        break
-      }
-      state.updateToolCallBlock(
-        event.callId,
-        event.success ? 'completed' : 'failed',
-        String(event.result || '')
-      )
-      break
-
-    case 'progress':
-      storeSet({ progressMessage: event.message || null })
-      break
-
-    case 'error':
-      storeSet({ error: event.error, isStreaming: false })
-      break
-
-    case 'user_message':
-      // 用户消息由 sendMessage 直接添加，这里不需要处理
-      break
-
-    default:
-      console.log('[EventChatStore] 未处理的 AIEvent 类型:', (event as { type: string }).type)
-  }
-}
-
-/**
- * 事件驱动 Chat State
- */
-interface EventChatState {
-  /** 消息列表（使用新的 ChatMessage 类型） */
-  messages: ChatMessage[]
-  /** 归档的消息列表 */
-  archivedMessages: ChatMessage[]
-  /** 归档是否展开 */
-  isArchiveExpanded: boolean
-  /** 当前会话 ID */
-  conversationId: string | null
-  /** 是否正在流式传输 */
-  isStreaming: boolean
-  /** 错误 */
-  error: string | null
-  /** 最大消息数配置 */
-  maxMessages: number
-  /** 是否已初始化 */
-  isInitialized: boolean
-  /** 是否正在加载历史 */
-  isLoadingHistory: boolean
-  /** 当前进度消息 */
-  progressMessage: string | null
-
-  /** 当前正在构建的 Assistant 消息 */
-  currentMessage: CurrentAssistantMessage | null
-  /** 工具调用块映射 (toolUseId -> blockIndex) */
-  toolBlockMap: Map<string, number>
-
-  /** Token Buffer - 用于批量处理流式 token */
-  tokenBuffer: TokenBuffer | null
-
-  /** 添加消息 */
-  addMessage: (message: ChatMessage) => void
-  /** 清空消息 */
-  clearMessages: () => void
-  /** 设置会话 ID */
-  setConversationId: (id: string | null) => void
-  /** 设置流式状态 */
-  setStreaming: (streaming: boolean) => void
-  /** 完成当前消息 */
-  finishMessage: () => void
-  /** 设置错误 */
-  setError: (error: string | null) => void
-  /** 设置进度消息 */
-  setProgressMessage: (message: string | null) => void
-
-  /** 添加文本块 */
-  appendTextBlock: (content: string) => void
-  /** 添加工具调用块 */
-  appendToolCallBlock: (toolId: string, toolName: string, input: Record<string, unknown>) => void
-  /** 更新工具调用块状态 */
-  updateToolCallBlock: (toolId: string, status: ToolStatus, output?: string, error?: string) => void
-  /** 更新当前 Assistant 消息（内部方法） */
-  updateCurrentAssistantMessage: (blocks: ContentBlock[]) => void
-
-  /** 初始化事件监听 */
-  initializeEventListeners: () => () => void
-
-  /** 发送消息 */
-  sendMessage: (content: string, workspaceDir?: string) => Promise<void>
-  /** 继续会话 */
-  continueChat: (prompt?: string) => Promise<void>
-  /** 中断会话 */
-  interruptChat: () => Promise<void>
-
-  /** 设置最大消息数 */
-  setMaxMessages: (max: number) => void
-  /** 切换归档展开状态 */
-  toggleArchive: () => void
-  /** 加载归档消息 */
-  loadArchivedMessages: () => void
-
-  /** 保存状态到本地存储 */
-  saveToStorage: () => void
-  /** 从本地存储恢复状态 */
-  restoreFromStorage: () => boolean
-
-  /** 保存会话到历史 */
-  saveToHistory: (title?: string) => void
-
-  /** 获取统一会话历史（包含 localStorage 和 IFlow） */
-  getUnifiedHistory: () => Promise<UnifiedHistoryItem[]>
-
-  /** 从历史恢复会话 */
-  restoreFromHistory: (sessionId: string, engineId?: 'claude-code' | 'iflow') => Promise<boolean>
-
-  /** 删除历史会话 */
-  deleteHistorySession: (sessionId: string, source?: 'local' | 'iflow') => void
-
-  /** 清空历史 */
-  clearHistory: () => void
-}
-
-/**
- * 事件驱动的 Chat Store
- */
-export const useEventChatStore = create<EventChatState>((set, get) => ({
-  messages: [],
-  archivedMessages: [],
-  isArchiveExpanded: false,
-  conversationId: null,
-  isStreaming: false,
-  error: null,
-  maxMessages: MAX_MESSAGES,
-  isInitialized: false,
-  isLoadingHistory: false,
-  progressMessage: null,
-  currentMessage: null,
-  toolBlockMap: new Map(),
-  tokenBuffer: null,
-
-  addMessage: (message) => {
-    set((state) => {
-      const newMessages = [...state.messages, message]
-
-      if (newMessages.length > MESSAGE_ARCHIVE_THRESHOLD) {
-        const archiveCount = newMessages.length - state.maxMessages
-        const toArchive = newMessages.slice(0, archiveCount)
-        const remaining = newMessages.slice(archiveCount)
-
-        return {
-          messages: remaining,
-          archivedMessages: toArchive,
-        }
-      }
-
-      return { messages: newMessages }
-    })
-
-    get().saveToStorage()
-  },
-
-  clearMessages: () => {
-    // 清理 TokenBuffer
-    const { tokenBuffer } = get()
-    if (tokenBuffer) {
-      tokenBuffer.destroy()
-    }
-
-    set({
-      messages: [],
-      archivedMessages: [],
-      isArchiveExpanded: false,
-      conversationId: null,
-      progressMessage: null,
-      currentMessage: null,
-      toolBlockMap: new Map(),
-      tokenBuffer: null,
-    })
-    useToolPanelStore.getState().clearTools()
-  },
-
-  setConversationId: (id) => {
-    set({ conversationId: id })
-  },
-
-  setStreaming: (streaming) => {
-    set({ isStreaming: streaming })
-  },
-
-  /**
-   * 完成当前消息
-   * 将 currentMessage 标记为完成，并清空
-   */
-  finishMessage: () => {
-    const { currentMessage, messages, tokenBuffer } = get()
-
-    // 先刷新 TokenBuffer，确保所有内容都已处理
-    if (tokenBuffer) {
-      tokenBuffer.end()
-    }
-
-    if (currentMessage) {
-      // 标记消息为完成状态
-      const completedMessage: AssistantChatMessage = {
-        id: currentMessage.id,
-        type: 'assistant',
-        blocks: currentMessage.blocks,
-        timestamp: new Date().toISOString(),
-        isStreaming: false,
-      }
-
-      // 更新消息列表中的当前消息（如果已存在）
-      const messageIndex = messages.findIndex(m => m.id === currentMessage.id)
-      if (messageIndex >= 0) {
-        set((state) => ({
-          messages: state.messages.map((m, i) =>
-            i === messageIndex ? completedMessage : m
-          ),
-          currentMessage: null,
-          progressMessage: null,
-          tokenBuffer: null,
-        }))
-      } else {
-        // 如果消息不在列表中（理论上不应该发生），添加它
-        set((state) => ({
-          messages: [...state.messages, completedMessage],
-          currentMessage: null,
-          progressMessage: null,
-          tokenBuffer: null,
-        }))
-      }
-    }
-
-    set({ isStreaming: false })
-    get().saveToStorage()
-  },
-
-  setError: (error) => {
-    set({ error })
-  },
-
-  setProgressMessage: (message) => {
-    set({ progressMessage: message })
-  },
-
-  /**
-   * 添加文本块到当前消息（使用 TokenBuffer 批量优化）
-   *
-   * 性能优化：使用 TokenBuffer 将多个 token 批量处理，
-   * 减少 90% 的状态更新和重渲染次数。
-   */
-  appendTextBlock: (content) => {
-    const { currentMessage, tokenBuffer } = get()
-    const now = new Date().toISOString()
-
-    // 如果没有当前消息，创建一个新的（首次调用）
-    if (!currentMessage) {
-      const textBlock: ContentBlock = { type: 'text', content }
-      const newMessage: CurrentAssistantMessage = {
-        id: crypto.randomUUID(),
-        blocks: [textBlock],
-        isStreaming: true,
-      }
-      set({
-        currentMessage: newMessage,
-        isStreaming: true,
-      })
-      // 立即添加到消息列表，让用户能看到
-      get().addMessage({
-        id: newMessage.id,
-        type: 'assistant',
-        blocks: newMessage.blocks,
-        timestamp: now,
-        isStreaming: true,
-      })
-
-      // 创建 TokenBuffer 用于后续的批量处理
-      const newBuffer = new TokenBuffer((batchedContent) => {
-        // TokenBuffer 刷新时的回调 - 批量更新内容
-        const state = get()
-        const msg = state.currentMessage
-        if (!msg) return
-
-        const lastBlock = msg.blocks[msg.blocks.length - 1]
-        if (lastBlock && lastBlock.type === 'text') {
-          // 追加到现有文本块
-          const updatedBlocks: ContentBlock[] = [...msg.blocks]
-          updatedBlocks[updatedBlocks.length - 1] = {
-            type: 'text',
-            content: (lastBlock as any).content + batchedContent,
-          }
-          set((state) => ({
-            currentMessage: state.currentMessage
-              ? { ...state.currentMessage, blocks: updatedBlocks }
-              : null,
-          }))
-          // 更新消息列表中的消息
-          get().updateCurrentAssistantMessage(updatedBlocks)
-        } else {
-          // 最后一块不是文本块（如 tool_call），创建新的文本块
-          // 这处理了工具调用后继续有文本的场景
-          const textBlock: ContentBlock = { type: 'text', content: batchedContent }
-          const updatedBlocks: ContentBlock[] = [...msg.blocks, textBlock]
-          set((state) => ({
-            currentMessage: state.currentMessage
-              ? { ...state.currentMessage, blocks: updatedBlocks }
-              : null,
-          }))
-          get().updateCurrentAssistantMessage(updatedBlocks)
-        }
-      }, { maxDelay: 50, maxSize: 500 })
-
-      set({ tokenBuffer: newBuffer })
-    } else if (tokenBuffer) {
-      // 有 TokenBuffer，使用批量处理
-      tokenBuffer.append(content)
-    } else {
-      // 降级：直接更新（用于非流式场景）
-      const lastBlock = currentMessage.blocks[currentMessage.blocks.length - 1]
-      if (lastBlock && lastBlock.type === 'text') {
-        const updatedBlocks: ContentBlock[] = [...currentMessage.blocks]
-        updatedBlocks[updatedBlocks.length - 1] = {
-          type: 'text',
-          content: (lastBlock as any).content + content,
-        }
-        set((state) => ({
-          currentMessage: state.currentMessage
-            ? { ...state.currentMessage, blocks: updatedBlocks }
-            : null,
-        }))
-        get().updateCurrentAssistantMessage(updatedBlocks)
-      } else {
-        const textBlock: ContentBlock = { type: 'text', content }
-        const updatedBlocks: ContentBlock[] = [...currentMessage.blocks, textBlock]
-        set((state) => ({
-          currentMessage: state.currentMessage
-            ? { ...state.currentMessage, blocks: updatedBlocks }
-            : null,
-        }))
-        get().updateCurrentAssistantMessage(updatedBlocks)
-      }
-    }
-  },
-
-  /**
-   * 添加工具调用块到当前消息
-   */
-  appendToolCallBlock: (toolId, toolName, input) => {
-    const { currentMessage } = get()
-    const toolPanelStore = useToolPanelStore.getState()
-    const now = new Date().toISOString()
-
-    if (!currentMessage) {
-      console.warn('[EventChatStore] No current message when adding tool call block')
-      return
-    }
-
-    const toolBlock: ToolCallBlock = {
-      type: 'tool_call',
-      id: toolId,
-      name: toolName,
-      input,
-      status: 'pending',
-      startedAt: now,
-    }
-
-    // 添加工具块
-    const updatedBlocks: ContentBlock[] = [...currentMessage.blocks, toolBlock]
-    const blockIndex = updatedBlocks.length - 1
-
-    // 优化：直接修改 toolBlockMap 而非创建新 Map
-    // Zustand 支持 Map 的直接修改（只要返回的是同一个 Map 引用）
-    const existingMap = get().toolBlockMap
-    existingMap.set(toolId, blockIndex)
-
-    set((state) => ({
-      currentMessage: state.currentMessage
-        ? { ...state.currentMessage, blocks: updatedBlocks }
-        : null,
-      // 保持相同的 Map 引用，避免不必要的重渲染
-      toolBlockMap: existingMap,
-    }))
-
-    // 更新消息列表中的消息
-    get().updateCurrentAssistantMessage(updatedBlocks)
-
-    // 同步到工具面板
-    toolPanelStore.addTool({
-      id: toolId,
-      name: toolName,
-      status: 'pending',
-      input,
-      startedAt: now,
-    })
-
-    // 更新进度消息
-    const summary = generateToolSummary(toolName, input, 'pending')
-    set({ progressMessage: summary })
-  },
-
-  /**
-   * 更新工具调用块状态
-   */
-  updateToolCallBlock: (toolId, status, output, error) => {
-    const { currentMessage, toolBlockMap } = get()
-    const toolPanelStore = useToolPanelStore.getState()
-    const blockIndex = toolBlockMap.get(toolId)
-
-    if (!currentMessage || blockIndex === undefined) {
-      console.warn('[EventChatStore] Tool block not found:', toolId)
-      return
-    }
-
-    const block = currentMessage.blocks[blockIndex]
-    if (!block || block.type !== 'tool_call') {
-      console.warn('[EventChatStore] Invalid tool block at index:', blockIndex)
-      return
-    }
-
-    const now = new Date().toISOString()
-    const duration = calculateDuration(block.startedAt, now)
-
-    // 更新工具块
-    const updatedBlock: ToolCallBlock = {
-      ...block,
-      status,
-      output,
-      error,
-      completedAt: now,
-      duration,
-    }
-
-    const updatedBlocks = [...currentMessage.blocks]
-    updatedBlocks[blockIndex] = updatedBlock
-
-    set((state) => ({
-      currentMessage: state.currentMessage
-        ? { ...state.currentMessage, blocks: updatedBlocks }
-        : null,
-    }))
-
-    // 更新消息列表中的消息
-    get().updateCurrentAssistantMessage(updatedBlocks)
-
-    // 同步到工具面板
-    toolPanelStore.updateTool(toolId, {
-      status,
-      output: output ? String(output) : undefined,
-      completedAt: now,
-    })
-
-    // 更新进度消息
-    const summary = generateToolSummary(block.name, block.input, status)
-    set({ progressMessage: summary })
-  },
-
-  /**
-   * 更新当前 Assistant 消息（内部方法）
-   */
-  updateCurrentAssistantMessage: (blocks: ContentBlock[]) => {
-    const { currentMessage } = get()
-    if (!currentMessage) return
-
-    set((state) => ({
-      messages: state.messages.map(msg =>
-        msg.id === currentMessage!.id
-          ? { ...msg, blocks } as AssistantChatMessage
-          : msg
-      ),
-    }))
-  },
-
-  /**
-   * 初始化事件监听
-   * 这是事件驱动架构的核心方法
-   *
-   * 架构说明（优化后）：
-   * 1. 监听 Tauri 'chat-event'（StreamEvent 原始格式）
-   * 2. convertStreamEventToAIEvents() 转换为 AIEvent
-   * 3. eventBus.emit() 发送到 EventBus（DeveloperPanel 订阅）
-   * 4. handleAIEvent() 更新本地状态
-   *
-   * 优化效果：
-   * - 消除了重复的 switch (streamEvent.type) 逻辑
-   * - 统一使用 AIEvent 进行状态更新
-   * - 代码减少约 100 行
-   */
-  initializeEventListeners: () => {
-    const cleanupCallbacks: Array<() => void> = []
-
-    // 获取 EventBus 单例
-    const eventBus = getEventBus({ debug: false })
-
-    // ========== 监听 Tauri chat-event（桥接 IFlow/Claude Code 事件） ==========
-    // 动态导入 Tauri API
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      const unlistenPromise = listen<string>('chat-event', (tauriEvent) => {
-        try {
-          const streamEvent = JSON.parse(tauriEvent.payload) as StreamEvent
-          const state = get()
-
-          console.log('[EventChatStore] 收到 chat-event:', streamEvent.type)
-
-          // ========== 步骤 1：转换为 AIEvent ==========
-          const aiEvents = convertStreamEventToAIEvents(streamEvent, state.conversationId)
-
-          // ========== 步骤 2：处理每个 AIEvent ==========
-          for (const aiEvent of aiEvents) {
-            // 2.1 发送到 EventBus（DeveloperPanel 可以订阅）
-            eventBus.emit(aiEvent)
-
-            // 2.2 更新本地状态
-            handleAIEvent(aiEvent, set, get)
-          }
-        } catch (e) {
-          console.error('[EventChatStore] 解析 chat-event 失败:', e)
-        }
-      })
-
-      // 将清理函数添加到列表
-      unlistenPromise.then((unlisten) => {
-        cleanupCallbacks.push(unlisten)
-      })
-    }).catch((err) => {
-      console.error('[EventChatStore] 导入 Tauri API 失败:', err)
-    })
-
-    // 返回清理函数
-    return () => {
-      cleanupCallbacks.forEach((cleanup) => cleanup())
-    }
-  },
-
-  sendMessage: async (content, workspaceDir) => {
-    const { conversationId } = get()
-
-    // 获取工作区信息（包括关联工作区）
-    const workspaceStore = useWorkspaceStore.getState()
-    const currentWorkspace = workspaceStore.getCurrentWorkspace()
-
-    // 如果没有工作区，不允许发送消息
-    if (!currentWorkspace) {
-      set({ error: '请先创建或选择一个工作区' })
-      return
-    }
-
-    // 获取当前工作区路径作为默认值
-    const actualWorkspaceDir = workspaceDir ?? currentWorkspace.path
-
-    // 解析工作区引用（只处理文件引用，不再生成 contextHeader）
-    const { processedMessage } = parseWorkspaceReferences(
-      content,
-      workspaceStore.workspaces,
-      workspaceStore.getContextWorkspaces(),
-      workspaceStore.currentWorkspaceId
-    )
-
-    // 构建系统提示词（用于 --system-prompt 参数）
-    const systemPrompt = buildSystemPrompt(
-      workspaceStore.workspaces,
-      workspaceStore.getContextWorkspaces(),
-      workspaceStore.currentWorkspaceId
-    )
-
-    // 规范化消息内容：将换行符替换为 \\n 字符串
-    const normalizedMessage = processedMessage
-      .replace(/\r\n/g, '\\n')
-      .replace(/\r/g, '\\n')
-      .replace(/\n/g, '\\n')
-      .trim()
-
-    // 规范化系统提示词中的换行
-    const normalizedSystemPrompt = systemPrompt
-      .replace(/\r\n/g, '\\n')
-      .replace(/\r/g, '\\n')
-      .replace(/\n/g, '\\n')
-      .trim()
-
-    // 添加用户消息（使用原始内容显示）
-    const userMessage: UserChatMessage = {
-      id: crypto.randomUUID(),
-      type: 'user',
-      content, // 保持原始内容显示
-      timestamp: new Date().toISOString(),
-    }
-    get().addMessage(userMessage)
-
-    set({
-      isStreaming: true,
-      error: null,
-      currentMessage: null,
-      toolBlockMap: new Map(),
-    })
-
-    useToolPanelStore.getState().clearTools()
-
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-
-      if (conversationId) {
-        await invoke('continue_chat', {
-          sessionId: conversationId,
-          message: normalizedMessage,
-          systemPrompt: normalizedSystemPrompt,
-          workDir: actualWorkspaceDir,
-        })
-      } else {
-        const newSessionId = await invoke<string>('start_chat', {
-          message: normalizedMessage,
-          systemPrompt: normalizedSystemPrompt,
-          workDir: actualWorkspaceDir,
-        })
-        set({ conversationId: newSessionId })
-      }
-    } catch (e) {
-      set({
-        error: e instanceof Error ? e.message : '发送消息失败',
-        isStreaming: false,
-      })
-    }
-  },
-
-  continueChat: async (prompt = '') => {
-    const { conversationId } = get()
-    if (!conversationId) {
-      set({ error: '没有活动会话', isStreaming: false })
-      return
-    }
-
-    // 获取当前工作区路径作为默认值
-    const actualWorkspaceDir = useWorkspaceStore.getState().getCurrentWorkspace()?.path
-
-    // 规范化消息内容：将换行符替换为 \\n 字符串
-    // 避免 iFlow CLI 参数解析器无法正确处理包含实际换行符的参数值
-    const normalizedPrompt = prompt
-      .replace(/\r\n/g, '\\n')
-      .replace(/\r/g, '\\n')
-      .replace(/\n/g, '\\n')
-      .trim()
-
-    set({ isStreaming: true, error: null })
-
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('continue_chat', {
-        sessionId: conversationId,
-        message: normalizedPrompt,
-        workDir: actualWorkspaceDir,
-      })
-    } catch (e) {
-      set({
-        error: e instanceof Error ? e.message : '继续对话失败',
-        isStreaming: false,
-      })
-    }
-  },
-
-  interruptChat: async () => {
-    const { conversationId, tokenBuffer } = get()
-    if (!conversationId) return
-
-    // 先刷新 TokenBuffer，确保已接收的内容显示出来，再重置
-    if (tokenBuffer) {
-      tokenBuffer.end()
-    }
-
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('interrupt_chat', { sessionId: conversationId })
-      set({ isStreaming: false })
-      get().finishMessage()
-    } catch (e) {
-      console.error('[EventChatStore] Interrupt failed:', e)
-    }
-  },
-
-  setMaxMessages: (max) => {
-    set({ maxMessages: Math.max(100, max) })
-
-    const { messages, archivedMessages } = get()
-    if (messages.length > max) {
-      const archiveCount = messages.length - max
-      const toArchive = messages.slice(0, archiveCount)
-      const remaining = messages.slice(archiveCount)
-
-      set({
-        messages: remaining,
-        archivedMessages: [...toArchive, ...archivedMessages] as ChatMessage[],
-      })
-    }
-  },
-
-  toggleArchive: () => {
-    set((state) => ({
-      isArchiveExpanded: !state.isArchiveExpanded,
-    }))
-  },
-
-  loadArchivedMessages: () => {
-    const { archivedMessages } = get()
-    if (archivedMessages.length === 0) return
-
-    set({
-      messages: [...archivedMessages, ...get().messages],
-      archivedMessages: [],
-      isArchiveExpanded: false,
-    })
-  },
-
-  saveToStorage: () => {
-    try {
-      const state = get()
-      const data = {
-        version: STORAGE_VERSION,
-        timestamp: new Date().toISOString(),
-        messages: state.messages,
-        archivedMessages: state.archivedMessages,
-        conversationId: state.conversationId,
-      }
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-    } catch (e) {
-      console.error('[EventChatStore] 保存状态失败:', e)
-    }
-  },
-
-  restoreFromStorage: () => {
-    try {
-      const stored = sessionStorage.getItem(STORAGE_KEY)
-      if (!stored) return false
-
-      const data = JSON.parse(stored)
-
-      if (data.version !== STORAGE_VERSION) {
-        console.warn('[EventChatStore] 存储版本不匹配，忽略')
-        return false
-      }
-
-      const storedTime = new Date(data.timestamp).getTime()
-      const now = Date.now()
-      if (now - storedTime > 60 * 60 * 1000) {
-        sessionStorage.removeItem(STORAGE_KEY)
-        return false
-      }
-
-      set({
-        messages: data.messages || [],
-        archivedMessages: data.archivedMessages || [],
-        conversationId: data.conversationId || null,
-        isStreaming: false,
-        isInitialized: true,
-        currentMessage: null,
-        toolBlockMap: new Map(),
-      })
-
-      sessionStorage.removeItem(STORAGE_KEY)
-      return true
-    } catch (e) {
-      console.error('[EventChatStore] 恢复状态失败:', e)
-      return false
-    }
-  },
-
-  /**
-   * 保存会话到历史
-   */
-  saveToHistory: (title?: string) => {
-    try {
-      const state = get()
-      if (!state.conversationId || state.messages.length === 0) return
-
-      // 获取当前引擎 ID
-      const config = useConfigStore.getState().config
-      const engineId: 'claude-code' | 'iflow' = config?.defaultEngine || 'claude-code'
-
-      // 获取现有历史
-      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
-      const history = historyJson ? JSON.parse(historyJson) : []
-
-      // 生成标题（从第一条用户消息提取）
-      const firstUserMessage = state.messages.find(m => m.type === 'user')
-      let sessionTitle = title || '新对话'
-      if (!title && firstUserMessage && 'content' in firstUserMessage) {
-        sessionTitle = (firstUserMessage.content as string).slice(0, 50) + '...'
-      }
-
-      // 创建历史记录
-      const historyEntry: HistoryEntry = {
-        id: state.conversationId,
-        title: sessionTitle,
-        timestamp: new Date().toISOString(),
-        messageCount: state.messages.length,
-        engineId,
-        data: {
-          messages: state.messages,
-          archivedMessages: state.archivedMessages,
-        }
-      }
-
-      // 移除同ID的旧记录
-      const filteredHistory = history.filter((h: HistoryEntry) => h.id !== state.conversationId)
-
-      // 添加新记录到开头
-      filteredHistory.unshift(historyEntry)
-
-      // 限制历史数量
-      const limitedHistory = filteredHistory.slice(0, MAX_SESSION_HISTORY)
-
-      localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(limitedHistory))
-      console.log('[EventChatStore] 会话已保存到历史:', sessionTitle, '引擎:', engineId)
-    } catch (e) {
-      console.error('[EventChatStore] 保存历史失败:', e)
-    }
-  },
-
-  /**
-   * 获取统一会话历史（包含 localStorage、IFlow 和 Claude Code 原生）
-   */
-  getUnifiedHistory: async () => {
-    const items: UnifiedHistoryItem[] = []
-    const iflowService = getIFlowHistoryService()
-    const claudeCodeService = getClaudeCodeHistoryService()
-    const workspaceStore = useWorkspaceStore.getState()
-    const currentWorkspace = workspaceStore.getCurrentWorkspace()
-
-    try {
-      // 1. 获取 localStorage 中的会话历史
-      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
-      const localHistory: HistoryEntry[] = historyJson ? JSON.parse(historyJson) : []
-
-      for (const h of localHistory) {
-        items.push({
-          id: h.id,
-          title: h.title,
-          timestamp: h.timestamp,
-          messageCount: h.messageCount,
-          engineId: h.engineId || 'claude-code',
-          source: 'local',
-        })
-      }
-
-      // 2. 获取 Claude Code 原生会话列表
-      try {
-        const claudeCodeSessions = await claudeCodeService.listSessions(
-          currentWorkspace?.path
-        )
-        for (const session of claudeCodeSessions) {
-          // 排除已经存在的会话
-          if (!items.find(item => item.id === session.sessionId)) {
-            items.push({
-              id: session.sessionId,
-              title: session.firstPrompt,
-              timestamp: session.modified,
-              messageCount: session.messageCount,
-              engineId: 'claude-code',
-              source: 'claude-code-native',
-              fileSize: session.fileSize,
-            })
-          }
-        }
-      } catch (e) {
-        console.warn('[EventChatStore] 获取 Claude Code 原生会话失败:', e)
-      }
-
-      // 3. 获取 IFlow 会话列表（如果当前工作区存在）
-      try {
-        const iflowSessions = await iflowService.listSessions()
-        for (const session of iflowSessions) {
-          // 排除已经存在的会话（避免重复）
-          if (!items.find(item => item.id === session.sessionId)) {
-            items.push({
-              id: session.sessionId,
-              title: session.title,
-              timestamp: session.updatedAt,
-              messageCount: session.messageCount,
-              engineId: 'iflow',
-              source: 'iflow',
-              fileSize: session.fileSize,
-              inputTokens: session.inputTokens,
-              outputTokens: session.outputTokens,
-            })
-          }
-        }
-      } catch (e) {
-        console.warn('[EventChatStore] 获取 IFlow 会话失败:', e)
-      }
-
-      // 4. 按时间戳排序
-      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-
-      return items
-    } catch (e) {
-      console.error('[EventChatStore] 获取统一历史失败:', e)
-      return []
-    }
-  },
-
-  /**
-   * 从历史恢复会话
-   */
-  restoreFromHistory: async (sessionId: string, engineId?: 'claude-code' | 'iflow') => {
-    try {
-      set({ isLoadingHistory: true })
-
-      // 1. 先尝试从 localStorage 恢复
-      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
-      const localHistory = historyJson ? JSON.parse(historyJson) : []
-      const localSession = localHistory.find((h: HistoryEntry) => h.id === sessionId)
-
-      if (localSession) {
-        set({
-          messages: localSession.data.messages || [],
-          archivedMessages: localSession.data.archivedMessages || [],
-          conversationId: localSession.id,
-          isStreaming: false,
-          error: null,
-        })
-
-        get().saveToStorage()
-        console.log('[EventChatStore] 已从本地历史恢复会话:', localSession.title)
-        return true
-      }
-
-      // 2. 尝试从 Claude Code 原生历史恢复
-      if (!engineId || engineId === 'claude-code') {
-        const claudeCodeService = getClaudeCodeHistoryService()
-        const workspaceStore = useWorkspaceStore.getState()
-        const currentWorkspace = workspaceStore.getCurrentWorkspace()
-
-        const messages = await claudeCodeService.getSessionHistory(
-          sessionId,
-          currentWorkspace?.path
-        )
-
-        if (messages.length > 0) {
-          // 使用新的 convertToChatMessages 方法，直接获取包含 blocks 的 ChatMessage
-          const chatMessages = claudeCodeService.convertToChatMessages(messages)
-          const toolCalls = claudeCodeService.extractToolCalls(messages)
-
-          // 设置工具面板
-          useToolPanelStore.getState().clearTools()
-          for (const tool of toolCalls) {
-            useToolPanelStore.getState().addTool(tool)
-          }
-
-          set({
-            messages: chatMessages,
-            archivedMessages: [],
-            conversationId: sessionId,
-            isStreaming: false,
-            error: null,
-          })
-
-          console.log('[EventChatStore] 已从 Claude Code 原生历史恢复会话:', sessionId)
-          return true
-        }
-      }
-
-      // 3. 如果指定了 IFlow 或未指定，尝试从 IFlow 恢复
-      if (!engineId || engineId === 'iflow') {
-        const iflowService = getIFlowHistoryService()
-        const messages = await iflowService.getSessionHistory(sessionId)
-
-        if (messages.length > 0) {
-          const convertedMessages = iflowService.convertMessagesToFormat(messages)
-          const toolCalls = iflowService.extractToolCalls(messages)
-
-          // 设置工具面板
-          useToolPanelStore.getState().clearTools()
-          for (const tool of toolCalls) {
-            useToolPanelStore.getState().addTool(tool)
-          }
-
-          // 将 Message 格式转换为 ChatMessage 格式
-          const chatMessages: ChatMessage[] = convertedMessages.map((msg): ChatMessage => {
-            if (msg.role === 'user') {
-              return {
-                id: msg.id,
-                type: 'user',
-                content: msg.content,
-                timestamp: msg.timestamp,
-              } as UserChatMessage
-            } else if (msg.role === 'assistant') {
-              return {
-                id: msg.id,
-                type: 'assistant',
-                blocks: [
-                  { type: 'text', content: msg.content }
-                ],
-                timestamp: msg.timestamp,
-                content: msg.content,
-                toolSummary: msg.toolSummary,
-              } as AssistantChatMessage
-            } else {
-              return {
-                id: msg.id,
-                type: 'system',
-                content: msg.content,
-                timestamp: msg.timestamp,
-              } as SystemChatMessage
-            }
-          })
-
-          set({
-            messages: chatMessages,
-            archivedMessages: [],
-            conversationId: sessionId,
-            isStreaming: false,
-            error: null,
-          })
-
-          console.log('[EventChatStore] 已从 IFlow 恢复会话:', sessionId)
-          return true
-        }
-      }
-
-      return false
-    } catch (e) {
-      console.error('[EventChatStore] 从历史恢复失败:', e)
-      return false
-    } finally {
-      set({ isLoadingHistory: false })
-    }
-  },
-
-  /**
-   * 删除历史会话
-   */
-  deleteHistorySession: (sessionId: string, source?: 'local' | 'iflow') => {
-    try {
-      if (source === 'iflow' || (!source && sessionId.startsWith('session-'))) {
-        // IFlow 会话不能删除，只能忽略
-        console.log('[EventChatStore] IFlow 会话无法删除，仅作忽略:', sessionId)
-        return
-      }
-
-      // 删除本地历史
-      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
-      const history = historyJson ? JSON.parse(historyJson) : []
-
-      const filteredHistory = history.filter((h: HistoryEntry) => h.id !== sessionId)
-      localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(filteredHistory))
-    } catch (e) {
-      console.error('[EventChatStore] 删除历史会话失败:', e)
-    }
-  },
-
-  /**
-   * 清空历史
-   */
-  clearHistory: () => {
-    try {
-      localStorage.removeItem(SESSION_HISTORY_KEY)
-      console.log('[EventChatStore] 历史已清空')
-    } catch (e) {
-      console.error('[EventChatStore] 清空历史失败:', e)
-    }
-  },
-}))
+﻿/**
+
+
+
+
+
+
+
+ * 浜嬩欢椹卞姩鐨?Chat Store
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * 瀹屽叏鍩轰簬 AIEvent 鍜?EventBus 鐨勮亰澶╃姸鎬佺鐞嗐€?
+
+
+
+
+
+
+
+ * 鏀寔鏂扮殑鍒嗗眰瀵硅瘽娴佹秷鎭被鍨嬶紙ToolMessage銆乀oolGroupMessage锛夈€?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * 鏋舵瀯璇存槑锛?
+
+
+
+
+
+
+
+ * 1. Tauri 'chat-event' 鈫?convertStreamEventToAIEvents() 鈫?EventBus.emit()
+
+
+
+
+
+
+
+ * 2. EventBus 鈫?DeveloperPanel锛堣皟璇曢潰鏉匡級
+
+
+
+
+
+
+
+ * 3. 鏈湴澶勭悊閫昏緫 鈫?UI 鏇存柊
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { create } from 'zustand'
+
+
+
+
+
+
+
+import type { ChatMessage, AssistantChatMessage, UserChatMessage, SystemChatMessage, ContentBlock, ToolCallBlock, ToolStatus } from '../types'
+
+
+
+
+
+
+
+import type { StreamEvent } from '../types/chat'
+
+
+
+
+
+
+
+import type { AIEvent } from '../ai-runtime'
+
+
+
+
+
+
+
+import type { EngineId } from '../types'
+
+
+
+
+
+
+
+import { useToolPanelStore } from './toolPanelStore'
+
+
+
+
+
+
+
+import { useWorkspaceStore } from './workspaceStore'
+
+
+
+
+
+
+
+import { useConfigStore } from './configStore'
+
+
+
+
+
+
+
+import {
+
+
+
+
+
+
+
+  generateToolSummary,
+
+
+
+
+
+
+
+  calculateDuration,
+
+
+
+
+
+
+
+} from '../utils/toolSummary'
+
+
+
+
+
+
+
+import { parseWorkspaceReferences, buildSystemPrompt } from '../services/workspaceReference'
+
+
+
+
+
+
+
+import { getEventBus } from '../ai-runtime'
+
+
+
+
+
+
+
+import { TokenBuffer } from '../utils/tokenBuffer'
+
+
+
+
+
+
+
+import { getIFlowHistoryService } from '../services/iflowHistoryService'
+
+
+
+
+
+
+
+import { getClaudeCodeHistoryService } from '../services/claudeCodeHistoryService'
+
+
+
+
+
+
+
+import { startChat as tauriStartChat, continueChat as tauriContinueChat, interruptChat as tauriInterruptChat, listenEvent } from '../services/tauri'
+
+
+
+
+
+
+
+import { extractToolEventInfo } from '../utils/streamEvent'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** 鏈€澶т繚鐣欐秷鎭暟閲?*/
+
+
+
+
+
+
+
+const MAX_MESSAGES = 500
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** 娑堟伅淇濈暀闃堝€?*/
+
+
+
+
+
+
+
+const MESSAGE_ARCHIVE_THRESHOLD = 550
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** 鏈湴瀛樺偍閿?*/
+
+
+
+
+
+
+
+const STORAGE_KEY = 'event_chat_state_backup'
+
+
+
+
+
+
+
+const STORAGE_VERSION = '5' // 鐗堟湰鍗囩骇锛氭坊鍔犲巻鍙茬鐞嗗姛鑳?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** 浼氳瘽鍘嗗彶瀛樺偍閿?*/
+
+
+
+
+
+
+
+const SESSION_HISTORY_KEY = 'event_chat_session_history'
+
+
+
+
+
+
+
+/** 鏈€澶т細璇濆巻鍙叉暟閲?*/
+
+
+
+
+
+
+
+const MAX_SESSION_HISTORY = 50
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function parseStreamEventPayload(payload: unknown): StreamEvent | null {
+
+
+
+
+
+
+
+  if (!payload) return null
+
+
+
+
+
+
+
+  if (typeof payload === 'string') {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      return JSON.parse(payload) as StreamEvent
+
+
+
+
+
+
+
+    } catch (error) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] ?? chat-event ??:', error)
+
+
+
+
+
+
+
+      return null
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+  if (typeof payload === 'object') {
+
+
+
+
+
+
+
+    return payload as StreamEvent
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+  return null
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 鍘嗗彶浼氳瘽璁板綍锛坙ocalStorage 瀛樺偍锛?
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+interface HistoryEntry {
+
+
+
+
+
+
+
+  id: string
+
+
+
+
+
+
+
+  title: string
+
+
+
+
+
+
+
+  timestamp: string
+
+
+
+
+
+
+
+  messageCount: number
+
+
+
+
+
+
+
+  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+
+
+
+
+
+
+
+  data: {
+
+
+
+
+
+
+
+    messages: ChatMessage[]
+
+
+
+
+
+
+
+    archivedMessages: ChatMessage[]
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 缁熶竴鐨勫巻鍙叉潯鐩紙鍖呭惈 localStorage銆両Flow 鍜?Claude Code 鍘熺敓鐨勪細璇濓級
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+export interface UnifiedHistoryItem {
+
+
+
+
+
+
+
+  id: string
+
+
+
+
+
+
+
+  title: string
+
+
+
+
+
+
+
+  timestamp: string
+
+
+
+
+
+
+
+  messageCount: number
+
+
+
+
+
+
+
+  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+
+
+
+
+
+
+
+  source: 'local' | 'iflow' | 'claude-code-native'
+
+
+
+
+
+
+
+  fileSize?: number
+
+
+
+
+
+
+
+  inputTokens?: number
+
+
+
+
+
+
+
+  outputTokens?: number
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+// 杈呭姪鍑芥暟锛氳В鏋?IFlow/Claude Code 鐨勬秷鎭唴瀹规牸寮?
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 浠庢秷鎭唴瀹逛腑鎻愬彇绾枃鏈?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * IFlow 鏍煎紡锛歝ontent 鏄暟缁勶紝鍖呭惈 text 鍜?tool_use 鍧?
+
+
+
+
+
+
+
+ * Claude Code 鏍煎紡锛歝ontent 鍙兘鏄瓧绗︿覆鎴栨暟缁?
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+function extractTextFromContent(content: unknown): string {
+
+
+
+
+
+
+
+  if (typeof content === 'string') {
+
+
+
+
+
+
+
+    return content
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  if (Array.isArray(content)) {
+
+
+
+
+
+
+
+    const texts: string[] = []
+
+
+
+
+
+
+
+    for (const item of content) {
+
+
+
+
+
+
+
+      if (item && typeof item === 'object') {
+
+
+
+
+
+
+
+        if ('type' in item && item.type === 'text' && 'text' in item) {
+
+
+
+
+
+
+
+          texts.push(String(item.text))
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+    return texts.join('')
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  return ''
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 浠庢秷鎭唴瀹逛腑鎻愬彇宸ュ叿璋冪敤
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * IFlow 鏍煎紡锛歝ontent 鏁扮粍涓殑 tool_use 鍧?
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+interface ToolUse {
+
+
+
+
+
+
+
+  id: string
+
+
+
+
+
+
+
+  name: string
+
+
+
+
+
+
+
+  input: unknown
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function extractToolUsesFromContent(content: unknown): ToolUse[] {
+
+
+
+
+
+
+
+  const toolUses: ToolUse[] = []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  if (Array.isArray(content)) {
+
+
+
+
+
+
+
+    for (const item of content) {
+
+
+
+
+
+
+
+      if (item && typeof item === 'object') {
+
+
+
+
+
+
+
+        if ('type' in item && item.type === 'tool_use') {
+
+
+
+
+
+
+
+          toolUses.push({
+
+
+
+
+
+
+
+            id: String(item.id || crypto.randomUUID()),
+
+
+
+
+
+
+
+            name: String(item.name || 'unknown'),
+
+
+
+
+
+
+
+            input: item.input,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  return toolUses
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 浠?user 娑堟伅涓彁鍙栧伐鍏风粨鏋?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * Claude Code 鏍煎紡锛歶ser 娑堟伅涓寘鍚?tool_result 鍧?
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+interface ToolResult {
+
+
+
+
+
+
+
+  tool_use_id: string
+
+
+
+
+
+
+
+  content: string
+
+
+
+
+
+
+
+  is_error?: boolean
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function extractToolResultsFromContent(content: unknown): ToolResult[] {
+
+
+
+
+
+
+
+  const results: ToolResult[] = []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  if (Array.isArray(content)) {
+
+
+
+
+
+
+
+    for (const item of content) {
+
+
+
+
+
+
+
+      if (item && typeof item === 'object') {
+
+
+
+
+
+
+
+        if ('type' in item && item.type === 'tool_result' && 'tool_use_id' in item) {
+
+
+
+
+
+
+
+          results.push({
+
+
+
+
+
+
+
+            tool_use_id: String(item.tool_use_id),
+
+
+
+
+
+
+
+            content: String(item.content || ''),
+
+
+
+
+
+
+
+            is_error: item.is_error === true,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  return results
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 褰撳墠姝ｅ湪鏋勫缓鐨?Assistant 娑堟伅
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+interface CurrentAssistantMessage {
+
+
+
+
+
+
+
+  id: string
+
+
+
+
+
+
+
+  blocks: ContentBlock[]
+
+
+
+
+
+
+
+  isStreaming: true
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+// 缁熶竴浜嬩欢杞崲灞傦細StreamEvent 鈫?AIEvent
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 灏?Tauri 鐨?StreamEvent 杞崲涓烘爣鍑嗙殑 AIEvent 鏁扮粍
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * 杩欐槸浜嬩欢杞崲鐨勭粺涓€鍏ュ彛锛屾墍鏈?StreamEvent 閮介€氳繃杩欓噷杞崲涓?AIEvent銆?
+
+
+
+
+
+
+
+ * 杞崲鍚庣殑浜嬩欢浼氾細
+
+
+
+
+
+
+
+ * 1. 閫氳繃 EventBus 鍒嗗彂缁欐墍鏈夎闃呰€咃紙濡?DeveloperPanel锛?
+
+
+
+
+
+
+
+ * 2. 鍚屾椂鍦ㄦ湰鍦拌繘琛岀姸鎬佹洿鏂?
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId: string | null): AIEvent[] {
+
+
+
+
+
+
+
+  const events: AIEvent[] = []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  switch (streamEvent.type) {
+
+
+
+
+
+
+
+    case 'system': {
+
+
+
+
+
+
+
+      // Claude Code 鐨?system 浜嬩欢鍙兘鍖呭惈 session_id
+
+
+
+
+
+
+
+      const systemEvent = streamEvent as { type: 'system'; subtype?: string; session_id?: string; extra?: { message?: string } }
+
+
+
+
+
+
+
+      if (systemEvent.session_id) {
+
+
+
+
+
+
+
+        events.push({ type: 'session_start', sessionId: systemEvent.session_id })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 澶勭悊杩涘害娑堟伅
+
+
+
+
+
+
+
+      if (systemEvent.subtype === 'progress' || systemEvent.extra?.message) {
+
+
+
+
+
+
+
+        events.push({
+
+
+
+
+
+
+
+          type: 'progress',
+
+
+
+
+
+
+
+          message: systemEvent.extra?.message || systemEvent.subtype,
+
+
+
+
+
+
+
+        })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'session_start': {
+
+
+
+
+
+
+
+      if (streamEvent.sessionId) {
+
+
+
+
+
+
+
+        events.push({ type: 'session_start', sessionId: streamEvent.sessionId })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'session_end':
+
+
+
+
+
+
+
+    case 'result': {
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'session_end',
+
+
+
+
+
+
+
+        sessionId: sessionId || 'unknown',
+
+
+
+
+
+
+
+        reason: 'completed',
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'text_delta': {
+
+
+
+
+
+
+
+      events.push({ type: 'token', value: streamEvent.text || '' })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'assistant': {
+
+
+
+
+
+
+
+      if (streamEvent.message?.content) {
+
+
+
+
+
+
+
+        // 鎻愬彇鏂囨湰鍐呭
+
+
+
+
+
+
+
+        const content = extractTextFromContent(streamEvent.message.content)
+
+
+
+
+
+
+
+        if (content) {
+
+
+
+
+
+
+
+          events.push({
+
+
+
+
+
+
+
+            type: 'assistant_message',
+
+
+
+
+
+
+
+            content,
+
+
+
+
+
+
+
+            isDelta: false,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // 鎻愬彇宸ュ叿璋冪敤
+
+
+
+
+
+
+
+        const toolUses = extractToolUsesFromContent(streamEvent.message.content)
+
+
+
+
+
+
+
+        for (const toolUse of toolUses) {
+
+
+
+
+
+
+
+          // 宸ュ叿璋冪敤寮€濮嬩簨浠?
+
+
+
+
+
+
+
+          events.push({
+
+
+
+
+
+
+
+            type: 'tool_call_start',
+
+
+
+
+
+
+
+            callId: toolUse.id,
+
+
+
+
+
+
+
+            tool: toolUse.name,
+
+
+
+
+
+
+
+            args: toolUse.input as Record<string, unknown>,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'user': {
+
+
+
+
+
+
+
+      if (streamEvent.message?.content) {
+
+
+
+
+
+
+
+        // 澶勭悊宸ュ叿缁撴灉
+
+
+
+
+
+
+
+        const toolResults = extractToolResultsFromContent(streamEvent.message.content)
+
+
+
+
+
+
+
+        for (const result of toolResults) {
+
+
+
+
+
+
+
+          events.push({
+
+
+
+
+
+
+
+            type: 'tool_call_end',
+
+
+
+
+
+
+
+            callId: result.tool_use_id,
+
+
+
+
+
+
+
+            tool: result.tool_use_id, // 浣跨敤 tool_use_id 浣滀负宸ュ叿鍚?
+
+
+
+
+
+
+
+            result: result.content,
+
+
+
+
+
+
+
+            success: !result.is_error,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_start':
+
+
+
+
+
+
+
+    case 'tool_use': {
+
+
+
+
+
+
+
+      const toolInfo = extractToolEventInfo(streamEvent)
+
+
+
+
+
+
+
+      const callId = toolInfo.toolId || crypto.randomUUID()
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'tool_call_start',
+
+
+
+
+
+
+
+        callId,
+
+
+
+
+
+
+
+        tool: toolInfo.toolName,
+
+
+
+
+
+
+
+        args: toolInfo.input,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'progress',
+
+
+
+
+
+
+
+        message: `璋冪敤宸ュ叿: ${toolInfo.toolName}`,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_end':
+
+
+
+
+
+
+
+    case 'tool_result': {
+
+
+
+
+
+
+
+      const toolInfo = extractToolEventInfo(streamEvent)
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'tool_call_end',
+
+
+
+
+
+
+
+        callId: toolInfo.toolId,
+
+
+
+
+
+
+
+        tool: toolInfo.toolName,
+
+
+
+
+
+
+
+        result: toolInfo.output,
+
+
+
+
+
+
+
+        success: toolInfo.success ?? toolInfo.output !== undefined,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'progress',
+
+
+
+
+
+
+
+        message: `宸ュ叿瀹屾垚: ${toolInfo.toolName}`,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_output': {
+
+      const toolInfo = extractToolEventInfo(streamEvent)
+
+      const output = toolInfo.output ?? ''
+
+      if (!output) {
+
+        break
+
+      }
+
+      events.push({
+
+        type: 'tool_call_output',
+
+        callId: toolInfo.toolId,
+
+        tool: toolInfo.toolName,
+
+        output,
+
+      })
+
+      break
+
+    }
+
+
+
+    case 'progress': {
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'progress',
+
+
+
+
+
+
+
+        message: streamEvent.message,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'error': {
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'error',
+
+
+
+
+
+
+
+        error: streamEvent.error || '鏈煡閿欒',
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'permission_request': {
+
+
+
+
+
+
+
+      events.push({
+
+
+
+
+
+
+
+        type: 'progress',
+
+
+
+
+
+
+
+        message: '绛夊緟鏉冮檺纭...',
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    default: {
+
+
+
+
+
+
+
+      const unknownEvent = streamEvent as { type: string }
+
+
+
+
+
+
+
+      console.log('[EventChatStore] 鏈浆鎹㈢殑浜嬩欢绫诲瀷:', unknownEvent.type)
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  return events
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+// 缁熶竴鐘舵€佹洿鏂板眰锛欰IEvent 鈫?鏈湴鐘舵€?
+
+
+
+
+
+
+
+// ============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 澶勭悊 AIEvent 鏇存柊鏈湴鐘舵€?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * 杩欐槸缁熶竴鐨勭姸鎬佹洿鏂板叆鍙ｏ紝鎵€鏈?AIEvent 閮介€氳繃杩欓噷鏇存柊鏈湴鐘舵€併€?
+
+
+
+
+
+
+
+ * 涓?convertStreamEventToAIEvents() 閰嶅悎浣跨敤锛屽疄鐜颁簨浠舵祦缁熶竴澶勭悊銆?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * 璁捐璇存槑锛?
+
+
+
+
+
+
+
+ * - 鍙鐞嗕笌鏈湴鐘舵€佺浉鍏崇殑 AIEvent
+
+
+
+
+
+
+
+ * - 涓嶅啀鐩存帴澶勭悊 StreamEvent锛岄伩鍏嶉噸澶嶉€昏緫
+
+
+
+
+
+
+
+ * - 涓?EventBus 鍒嗙锛孲tore 鍙礋璐ｇ姸鎬佺鐞?
+
+
+
+
+
+
+
+ *
+
+
+
+
+
+
+
+ * @param event 瑕佸鐞嗙殑 AIEvent
+
+
+
+
+
+
+
+ * @param storeSet Zustand 鐨?set 鍑芥暟
+
+
+
+
+
+
+
+ * @param storeGet Zustand 鐨?get 鍑芥暟
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+function handleAIEvent(
+
+
+
+
+
+
+
+  event: AIEvent,
+
+
+
+
+
+
+
+  storeSet: (partial: Partial<EventChatState> | ((state: EventChatState) => Partial<EventChatState>)) => void,
+
+
+
+
+
+
+
+  storeGet: () => EventChatState
+
+
+
+
+
+
+
+): void {
+
+
+
+
+
+
+
+  const state = storeGet()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  switch (event.type) {
+
+
+
+
+
+
+
+    case 'session_start':
+
+
+
+
+
+
+
+      storeSet({ conversationId: event.sessionId, isStreaming: true })
+
+
+
+
+
+
+
+      console.log('[EventChatStore] Session started:', event.sessionId)
+
+
+
+
+
+
+
+      useToolPanelStore.getState().clearTools()
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'session_end':
+
+
+
+
+
+
+
+      state.finishMessage()
+
+
+
+
+
+
+
+      storeSet({ isStreaming: false, progressMessage: null })
+
+
+
+
+
+
+
+      console.log('[EventChatStore] Session ended:', event.reason)
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'token':
+
+
+
+
+
+
+
+      state.appendTextBlock(event.value)
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'assistant_message':
+
+
+
+
+
+
+
+      state.appendTextBlock(event.content)
+
+
+
+
+
+
+
+      // 娉ㄦ剰锛氬伐鍏疯皟鐢ㄤ細閫氳繃鐙珛鐨?tool_call_start 浜嬩欢澶勭悊锛屼笉鍦ㄨ繖閲屽鐞?
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_call_start':
+
+
+
+
+
+
+
+      state.appendToolCallBlock(
+
+
+
+
+
+
+
+        event.callId || crypto.randomUUID(),
+
+
+
+
+
+
+
+        event.tool,
+
+
+
+
+
+
+
+        event.args
+
+
+
+
+
+
+
+      )
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_call_end':
+
+
+
+
+
+
+
+      if (!event.callId) {
+
+
+
+
+
+
+
+        console.warn('[EventChatStore] tool_call_end 浜嬩欢缂哄皯 callId锛屽伐鍏风姸鎬佹棤娉曟洿鏂?', event.tool)
+
+
+
+
+
+
+
+        break
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      state.updateToolCallBlock(
+
+
+
+
+
+
+
+        event.callId,
+
+
+
+
+
+
+
+        event.success ? 'completed' : 'failed',
+
+
+
+
+
+
+
+        String(event.result || '')
+
+
+
+
+
+
+
+      )
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'tool_call_output':
+
+
+
+
+
+
+
+      if (!event.callId) {
+
+
+
+
+
+
+
+        console.warn('[EventChatStore] tool_call_output ???? callId???????', event.tool)
+
+
+
+
+
+
+
+        break
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      state.appendToolCallOutput(event.callId, event.output)
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'progress':
+
+
+
+
+
+
+
+      storeSet({ progressMessage: event.message || null })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'error':
+
+
+
+
+
+
+
+      storeSet({ error: event.error, isStreaming: false })
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    case 'user_message':
+
+
+
+
+
+
+
+      // 鐢ㄦ埛娑堟伅鐢?sendMessage 鐩存帴娣诲姞锛岃繖閲屼笉闇€瑕佸鐞?
+
+
+
+
+
+
+
+      break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    default:
+
+
+
+
+
+
+
+      console.log('[EventChatStore] 鏈鐞嗙殑 AIEvent 绫诲瀷:', (event as { type: string }).type)
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 浜嬩欢椹卞姩 Chat State
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+interface EventChatState {
+
+
+
+
+
+
+
+  /** 娑堟伅鍒楄〃锛堜娇鐢ㄦ柊鐨?ChatMessage 绫诲瀷锛?*/
+
+
+
+
+
+
+
+  messages: ChatMessage[]
+
+
+
+
+
+
+
+  /** 褰掓。鐨勬秷鎭垪琛?*/
+
+
+
+
+
+
+
+  archivedMessages: ChatMessage[]
+
+
+
+
+
+
+
+  /** 褰掓。鏄惁灞曞紑 */
+
+
+
+
+
+
+
+  isArchiveExpanded: boolean
+
+
+
+
+
+
+
+  /** 褰撳墠浼氳瘽 ID */
+
+
+
+
+
+
+
+  conversationId: string | null
+
+
+
+
+
+
+
+  /** 鏄惁姝ｅ湪娴佸紡浼犺緭 */
+
+
+
+
+
+
+
+  isStreaming: boolean
+
+
+
+
+
+
+
+  /** 閿欒 */
+
+
+
+
+
+
+
+  error: string | null
+
+
+
+
+
+
+
+  /** 鏈€澶ф秷鎭暟閰嶇疆 */
+
+
+
+
+
+
+
+  maxMessages: number
+
+
+
+
+
+
+
+  /** 鏄惁宸插垵濮嬪寲 */
+
+
+
+
+
+
+
+  isInitialized: boolean
+
+
+
+
+
+
+
+  /** 鏄惁姝ｅ湪鍔犺浇鍘嗗彶 */
+
+
+
+
+
+
+
+  isLoadingHistory: boolean
+
+
+
+
+
+
+
+  /** 褰撳墠杩涘害娑堟伅 */
+
+
+
+
+
+
+
+  progressMessage: string | null
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 褰撳墠姝ｅ湪鏋勫缓鐨?Assistant 娑堟伅 */
+
+
+
+
+
+
+
+  currentMessage: CurrentAssistantMessage | null
+
+
+
+
+
+
+
+  /** 宸ュ叿璋冪敤鍧楁槧灏?(toolUseId -> blockIndex) */
+
+
+
+
+
+
+
+  toolBlockMap: Map<string, number>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** Token Buffer - 鐢ㄤ簬鎵归噺澶勭悊娴佸紡 token */
+
+
+
+
+
+
+
+  tokenBuffer: TokenBuffer | null
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 娣诲姞娑堟伅 */
+
+
+
+
+
+
+
+  addMessage: (message: ChatMessage) => void
+
+
+
+
+
+
+
+  /** 娓呯┖娑堟伅 */
+
+
+
+
+
+
+
+  clearMessages: () => void
+
+
+
+
+
+
+
+  /** 璁剧疆浼氳瘽 ID */
+
+
+
+
+
+
+
+  setConversationId: (id: string | null) => void
+
+
+
+
+
+
+
+  /** 璁剧疆娴佸紡鐘舵€?*/
+
+
+
+
+
+
+
+  setStreaming: (streaming: boolean) => void
+
+
+
+
+
+
+
+  /** 瀹屾垚褰撳墠娑堟伅 */
+
+
+
+
+
+
+
+  finishMessage: () => void
+
+
+
+
+
+
+
+  /** 璁剧疆閿欒 */
+
+
+
+
+
+
+
+  setError: (error: string | null) => void
+
+
+
+
+
+
+
+  /** 璁剧疆杩涘害娑堟伅 */
+
+
+
+
+
+
+
+  setProgressMessage: (message: string | null) => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 娣诲姞鏂囨湰鍧?*/
+
+
+
+
+
+
+
+  appendTextBlock: (content: string) => void
+
+
+
+
+
+
+
+  /** 娣诲姞宸ュ叿璋冪敤鍧?*/
+
+
+
+
+
+
+
+  appendToolCallBlock: (toolId: string, toolName: string, input: Record<string, unknown>) => void
+
+
+
+
+
+
+
+  /** 鏇存柊宸ュ叿璋冪敤鍧楃姸鎬?*/
+
+
+
+
+
+
+
+  updateToolCallBlock: (toolId: string, status: ToolStatus, output?: string, error?: string) => void
+
+
+
+
+
+
+
+  appendToolCallOutput: (toolId: string, chunk: string) => void
+
+
+
+
+
+
+
+  /** 鏇存柊褰撳墠 Assistant 娑堟伅锛堝唴閮ㄦ柟娉曪級 */
+
+
+
+
+
+
+
+  updateCurrentAssistantMessage: (blocks: ContentBlock[]) => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 鍒濆鍖栦簨浠剁洃鍚?*/
+
+
+
+
+
+
+
+  initializeEventListeners: () => () => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 鍙戦€佹秷鎭?*/
+
+
+
+
+
+
+
+  sendMessage: (content: string, workspaceDir?: string) => Promise<void>
+
+
+
+
+
+
+
+  /** 缁х画浼氳瘽 */
+
+
+
+
+
+
+
+  continueChat: (prompt?: string) => Promise<void>
+
+
+
+
+
+
+
+  /** 涓柇浼氳瘽 */
+
+
+
+
+
+
+
+  interruptChat: () => Promise<void>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 璁剧疆鏈€澶ф秷鎭暟 */
+
+
+
+
+
+
+
+  setMaxMessages: (max: number) => void
+
+
+
+
+
+
+
+  /** 鍒囨崲褰掓。灞曞紑鐘舵€?*/
+
+
+
+
+
+
+
+  toggleArchive: () => void
+
+
+
+
+
+
+
+  /** 鍔犺浇褰掓。娑堟伅 */
+
+
+
+
+
+
+
+  loadArchivedMessages: () => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 淇濆瓨鐘舵€佸埌鏈湴瀛樺偍 */
+
+
+
+
+
+
+
+  saveToStorage: () => void
+
+
+
+
+
+
+
+  /** 浠庢湰鍦板瓨鍌ㄦ仮澶嶇姸鎬?*/
+
+
+
+
+
+
+
+  restoreFromStorage: () => boolean
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 淇濆瓨浼氳瘽鍒板巻鍙?*/
+
+
+
+
+
+
+
+  saveToHistory: (title?: string) => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 鑾峰彇缁熶竴浼氳瘽鍘嗗彶锛堝寘鍚?localStorage 鍜?IFlow锛?*/
+
+
+
+
+
+
+
+  getUnifiedHistory: () => Promise<UnifiedHistoryItem[]>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 浠庡巻鍙叉仮澶嶄細璇?*/
+
+
+
+
+
+
+
+  restoreFromHistory: (sessionId: string, engineId?: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini') => Promise<boolean>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 鍒犻櫎鍘嗗彶浼氳瘽 */
+
+
+
+
+
+
+
+  deleteHistorySession: (sessionId: string, source?: 'local' | 'iflow') => void
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /** 娓呯┖鍘嗗彶 */
+
+
+
+
+
+
+
+  clearHistory: () => void
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+
+
+
+
+
+
+
+ * 浜嬩欢椹卞姩鐨?Chat Store
+
+
+
+
+
+
+
+ */
+
+
+
+
+
+
+
+export const useEventChatStore = create<EventChatState>((set, get) => ({
+
+
+
+
+
+
+
+  messages: [],
+
+
+
+
+
+
+
+  archivedMessages: [],
+
+
+
+
+
+
+
+  isArchiveExpanded: false,
+
+
+
+
+
+
+
+  conversationId: null,
+
+
+
+
+
+
+
+  isStreaming: false,
+
+
+
+
+
+
+
+  error: null,
+
+
+
+
+
+
+
+  maxMessages: MAX_MESSAGES,
+
+
+
+
+
+
+
+  isInitialized: false,
+
+
+
+
+
+
+
+  isLoadingHistory: false,
+
+
+
+
+
+
+
+  progressMessage: null,
+
+
+
+
+
+
+
+  currentMessage: null,
+
+
+
+
+
+
+
+  toolBlockMap: new Map(),
+
+
+
+
+
+
+
+  tokenBuffer: null,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  addMessage: (message) => {
+
+
+
+
+
+
+
+    set((state) => {
+
+
+
+
+
+
+
+      const newMessages = [...state.messages, message]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      if (newMessages.length > MESSAGE_ARCHIVE_THRESHOLD) {
+
+
+
+
+
+
+
+        const archiveCount = newMessages.length - state.maxMessages
+
+
+
+
+
+
+
+        const toArchive = newMessages.slice(0, archiveCount)
+
+
+
+
+
+
+
+        const remaining = newMessages.slice(archiveCount)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        return {
+
+
+
+
+
+
+
+          messages: remaining,
+
+
+
+
+
+
+
+          archivedMessages: toArchive,
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      return { messages: newMessages }
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    get().saveToStorage()
+
+
+
+
+
+
+
+    get().saveToHistory()
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  clearMessages: () => {
+
+
+
+
+
+
+
+    get().saveToHistory()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 娓呯悊 TokenBuffer
+
+
+
+
+
+
+
+    const { tokenBuffer } = get()
+
+
+
+
+
+
+
+    if (tokenBuffer) {
+
+
+
+
+
+
+
+      tokenBuffer.destroy()
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set({
+
+
+
+
+
+
+
+      messages: [],
+
+
+
+
+
+
+
+      archivedMessages: [],
+
+
+
+
+
+
+
+      isArchiveExpanded: false,
+
+
+
+
+
+
+
+      conversationId: null,
+
+
+
+
+
+
+
+      progressMessage: null,
+
+
+
+
+
+
+
+      currentMessage: null,
+
+
+
+
+
+
+
+      toolBlockMap: new Map(),
+
+
+
+
+
+
+
+      tokenBuffer: null,
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+    useToolPanelStore.getState().clearTools()
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  setConversationId: (id) => {
+
+
+
+
+
+
+
+    set({ conversationId: id })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  setStreaming: (streaming) => {
+
+
+
+
+
+
+
+    set({ isStreaming: streaming })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 瀹屾垚褰撳墠娑堟伅
+
+
+
+
+
+
+
+   * 灏?currentMessage 鏍囪涓哄畬鎴愶紝骞舵竻绌?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  finishMessage: () => {
+
+
+
+
+
+
+
+    const { currentMessage, messages, tokenBuffer } = get()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鍏堝埛鏂?TokenBuffer锛岀‘淇濇墍鏈夊唴瀹归兘宸插鐞?
+
+
+
+
+
+
+
+    if (tokenBuffer) {
+
+
+
+
+
+
+
+      tokenBuffer.end()
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if (currentMessage) {
+
+
+
+
+
+
+
+      // 鏍囪娑堟伅涓哄畬鎴愮姸鎬?
+
+
+
+
+
+
+
+      const completedMessage: AssistantChatMessage = {
+
+
+
+
+
+
+
+        id: currentMessage.id,
+
+
+
+
+
+
+
+        type: 'assistant',
+
+
+
+
+
+
+
+        blocks: currentMessage.blocks,
+
+
+
+
+
+
+
+        timestamp: new Date().toISOString(),
+
+
+
+
+
+
+
+        isStreaming: false,
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鏇存柊娑堟伅鍒楄〃涓殑褰撳墠娑堟伅锛堝鏋滃凡瀛樺湪锛?
+
+
+
+
+
+
+
+      const messageIndex = messages.findIndex(m => m.id === currentMessage.id)
+
+
+
+
+
+
+
+      if (messageIndex >= 0) {
+
+
+
+
+
+
+
+        set((state) => ({
+
+
+
+
+
+
+
+          messages: state.messages.map((m, i) =>
+
+
+
+
+
+
+
+            i === messageIndex ? completedMessage : m
+
+
+
+
+
+
+
+          ),
+
+
+
+
+
+
+
+          currentMessage: null,
+
+
+
+
+
+
+
+          progressMessage: null,
+
+
+
+
+
+
+
+          tokenBuffer: null,
+
+
+
+
+
+
+
+          isStreaming: false,
+
+
+
+
+
+
+
+        }))
+
+
+
+
+
+
+
+      } else {
+
+
+
+
+
+
+
+        // 濡傛灉娑堟伅涓嶅湪鍒楄〃涓紙鐞嗚涓婁笉搴旇鍙戠敓锛夛紝娣诲姞瀹?
+
+
+
+
+
+
+
+        set((state) => ({
+
+
+
+
+
+
+
+          messages: [...state.messages, completedMessage],
+
+
+
+
+
+
+
+          currentMessage: null,
+
+
+
+
+
+
+
+          progressMessage: null,
+
+
+
+
+
+
+
+          tokenBuffer: null,
+
+
+
+
+
+
+
+          isStreaming: false,
+
+
+
+
+
+
+
+        }))
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    } else {
+
+
+
+
+
+
+
+      set({ isStreaming: false })
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+    get().saveToStorage()
+
+
+
+
+
+
+
+    get().saveToHistory()
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  setError: (error) => {
+
+
+
+
+
+
+
+    set({ error })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  setProgressMessage: (message) => {
+
+
+
+
+
+
+
+    set({ progressMessage: message })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 娣诲姞鏂囨湰鍧楀埌褰撳墠娑堟伅锛堜娇鐢?TokenBuffer 鎵归噺浼樺寲锛?
+
+
+
+
+
+
+
+   *
+
+
+
+
+
+
+
+   * 鎬ц兘浼樺寲锛氫娇鐢?TokenBuffer 灏嗗涓?token 鎵归噺澶勭悊锛?
+
+
+
+
+
+
+
+   * 鍑忓皯 90% 鐨勭姸鎬佹洿鏂板拰閲嶆覆鏌撴鏁般€?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  appendTextBlock: (content) => {
+
+
+
+
+
+
+
+    const { currentMessage, tokenBuffer } = get()
+
+
+
+
+
+
+
+    const now = new Date().toISOString()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 濡傛灉娌℃湁褰撳墠娑堟伅锛屽垱寤轰竴涓柊鐨勶紙棣栨璋冪敤锛?
+
+
+
+
+
+
+
+    if (!currentMessage) {
+
+
+
+
+
+
+
+      const textBlock: ContentBlock = { type: 'text', content }
+
+
+
+
+
+
+
+      const newMessage: CurrentAssistantMessage = {
+
+
+
+
+
+
+
+        id: crypto.randomUUID(),
+
+
+
+
+
+
+
+        blocks: [textBlock],
+
+
+
+
+
+
+
+        isStreaming: true,
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      set({
+
+
+
+
+
+
+
+        currentMessage: newMessage,
+
+
+
+
+
+
+
+        isStreaming: true,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+      // 绔嬪嵆娣诲姞鍒版秷鎭垪琛紝璁╃敤鎴疯兘鐪嬪埌
+
+
+
+
+
+
+
+      get().addMessage({
+
+
+
+
+
+
+
+        id: newMessage.id,
+
+
+
+
+
+
+
+        type: 'assistant',
+
+
+
+
+
+
+
+        blocks: newMessage.blocks,
+
+
+
+
+
+
+
+        timestamp: now,
+
+
+
+
+
+
+
+        isStreaming: true,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鍒涘缓 TokenBuffer 鐢ㄤ簬鍚庣画鐨勬壒閲忓鐞?
+
+
+
+
+
+
+
+      const newBuffer = new TokenBuffer((batchedContent) => {
+
+
+
+
+
+
+
+        // TokenBuffer 鍒锋柊鏃剁殑鍥炶皟 - 鎵归噺鏇存柊鍐呭
+
+
+
+
+
+
+
+        const state = get()
+
+
+
+
+
+
+
+        const msg = state.currentMessage
+
+
+
+
+
+
+
+        if (!msg) return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        const lastBlock = msg.blocks[msg.blocks.length - 1]
+
+
+
+
+
+
+
+        if (lastBlock && lastBlock.type === 'text') {
+
+
+
+
+
+
+
+          // 杩藉姞鍒扮幇鏈夋枃鏈潡
+
+
+
+
+
+
+
+          const updatedBlocks: ContentBlock[] = [...msg.blocks]
+
+
+
+
+
+
+
+          updatedBlocks[updatedBlocks.length - 1] = {
+
+
+
+
+
+
+
+            type: 'text',
+
+
+
+
+
+
+
+            content: (lastBlock as { type: 'text'; content: string }).content + batchedContent,
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+          set((state) => ({
+
+
+
+
+
+
+
+            currentMessage: state.currentMessage
+
+
+
+
+
+
+
+              ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+              : null,
+
+
+
+
+
+
+
+          }))
+
+
+
+
+
+
+
+          // 鏇存柊娑堟伅鍒楄〃涓殑娑堟伅
+
+
+
+
+
+
+
+          get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+        } else {
+
+
+
+
+
+
+
+          // 鏈€鍚庝竴鍧椾笉鏄枃鏈潡锛堝 tool_call锛夛紝鍒涘缓鏂扮殑鏂囨湰鍧?
+
+
+
+
+
+
+
+          // 杩欏鐞嗕簡宸ュ叿璋冪敤鍚庣户缁湁鏂囨湰鐨勫満鏅?
+
+
+
+
+
+
+
+          const textBlock: ContentBlock = { type: 'text', content: batchedContent }
+
+
+
+
+
+
+
+          const updatedBlocks: ContentBlock[] = [...msg.blocks, textBlock]
+
+
+
+
+
+
+
+          set((state) => ({
+
+
+
+
+
+
+
+            currentMessage: state.currentMessage
+
+
+
+
+
+
+
+              ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+              : null,
+
+
+
+
+
+
+
+          }))
+
+
+
+
+
+
+
+          get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }, { maxDelay: 50, maxSize: 500 })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      set({ tokenBuffer: newBuffer })
+
+
+
+
+
+
+
+    } else if (tokenBuffer) {
+
+
+
+
+
+
+
+      // 鏈?TokenBuffer锛屼娇鐢ㄦ壒閲忓鐞?
+
+
+
+
+
+
+
+      tokenBuffer.append(content)
+
+
+
+
+
+
+
+    } else {
+
+
+
+
+
+
+
+      // 闄嶇骇锛氱洿鎺ユ洿鏂帮紙鐢ㄤ簬闈炴祦寮忓満鏅級
+
+
+
+
+
+
+
+      const lastBlock = currentMessage.blocks[currentMessage.blocks.length - 1]
+
+
+
+
+
+
+
+      if (lastBlock && lastBlock.type === 'text') {
+
+
+
+
+
+
+
+        const updatedBlocks: ContentBlock[] = [...currentMessage.blocks]
+
+
+
+
+
+
+
+        updatedBlocks[updatedBlocks.length - 1] = {
+
+
+
+
+
+
+
+          type: 'text',
+
+
+
+
+
+
+
+          content: (lastBlock as { type: 'text'; content: string }).content + content,
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+        set((state) => ({
+
+
+
+
+
+
+
+          currentMessage: state.currentMessage
+
+
+
+
+
+
+
+            ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+            : null,
+
+
+
+
+
+
+
+        }))
+
+
+
+
+
+
+
+        get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+      } else {
+
+
+
+
+
+
+
+        const textBlock: ContentBlock = { type: 'text', content }
+
+
+
+
+
+
+
+        const updatedBlocks: ContentBlock[] = [...currentMessage.blocks, textBlock]
+
+
+
+
+
+
+
+        set((state) => ({
+
+
+
+
+
+
+
+          currentMessage: state.currentMessage
+
+
+
+
+
+
+
+            ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+            : null,
+
+
+
+
+
+
+
+        }))
+
+
+
+
+
+
+
+        get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 娣诲姞宸ュ叿璋冪敤鍧楀埌褰撳墠娑堟伅
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  appendToolCallBlock: (toolId, toolName, input) => {
+
+
+
+
+
+
+
+    const { currentMessage } = get()
+
+
+
+
+
+
+
+    const toolPanelStore = useToolPanelStore.getState()
+
+
+
+
+
+
+
+    const now = new Date().toISOString()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if (!currentMessage) {
+      const newMessage: CurrentAssistantMessage = {
+        id: crypto.randomUUID(),
+        blocks: [],
+        isStreaming: true,
+      }
+      set({ currentMessage: newMessage, isStreaming: true })
+      const { messages } = get()
+      set({ messages: [...messages, { type: 'assistant', id: newMessage.id, role: 'assistant', blocks: [], timestamp: now, isStreaming: true } as AssistantChatMessage] })
+    }
+    const currentMsg = get().currentMessage
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const toolBlock: ToolCallBlock = {
+
+
+
+
+
+
+
+      type: 'tool_call',
+
+
+
+
+
+
+
+      id: toolId,
+
+
+
+
+
+
+
+      name: toolName,
+
+
+
+
+
+
+
+      input,
+
+
+
+
+
+
+
+      status: 'pending',
+
+
+
+
+
+
+
+      startedAt: now,
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 娣诲姞宸ュ叿鍧?
+
+
+
+
+
+
+
+    if (!currentMsg) { return }
+    const updatedBlocks: ContentBlock[] = [...currentMsg.blocks, toolBlock]
+
+
+
+
+
+
+
+    const blockIndex = updatedBlocks.length - 1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 浼樺寲锛氬垱寤烘柊 Map 淇濊瘉涓嶅彲鍙樻€э紝璁?Zustand 鑳芥纭娴嬪彉鍖?
+
+
+
+
+
+
+
+    const newToolBlockMap = new Map(get().toolBlockMap);
+
+
+
+
+
+
+
+    newToolBlockMap.set(toolId, blockIndex);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set((state) => ({
+
+
+
+
+
+
+
+      currentMessage: state.currentMessage
+
+
+
+
+
+
+
+        ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+        : null,
+
+
+
+
+
+
+
+      toolBlockMap: newToolBlockMap,
+
+
+
+
+
+
+
+    }))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏇存柊娑堟伅鍒楄〃涓殑娑堟伅
+
+
+
+
+
+
+
+    get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鍚屾鍒板伐鍏烽潰鏉?
+
+
+
+
+
+
+
+    toolPanelStore.addTool({
+
+
+
+
+
+
+
+      id: toolId,
+
+
+
+
+
+
+
+      name: toolName,
+
+
+
+
+
+
+
+      status: 'pending',
+
+
+
+
+
+
+
+      input,
+
+
+
+
+
+
+
+      startedAt: now,
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏇存柊杩涘害娑堟伅
+
+
+
+
+
+
+
+    const summary = generateToolSummary(toolName, input, 'pending')
+
+
+
+
+
+
+
+    set({ progressMessage: summary })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 鏇存柊宸ュ叿璋冪敤鍧楃姸鎬?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  updateToolCallBlock: (toolId, status, output, error) => {
+
+
+
+
+
+
+
+    const { currentMessage, toolBlockMap } = get()
+
+
+
+
+
+
+
+    const toolPanelStore = useToolPanelStore.getState()
+
+
+
+
+
+
+
+    const blockIndex = toolBlockMap.get(toolId)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if (!currentMessage || blockIndex === undefined) {
+
+
+
+
+
+
+
+      console.warn('[EventChatStore] Tool block not found:', toolId)
+
+
+
+
+
+
+
+      return
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const block = currentMessage.blocks[blockIndex]
+
+
+
+
+
+
+
+    if (!block || block.type !== 'tool_call') {
+
+
+
+
+
+
+
+      console.warn('[EventChatStore] Invalid tool block at index:', blockIndex)
+
+
+
+
+
+
+
+      return
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const now = new Date().toISOString()
+
+
+
+
+
+
+
+    const duration = calculateDuration(block.startedAt, now)
+    const finalOutput = output && output.length > 0 ? output : block.output
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏇存柊宸ュ叿鍧?
+
+
+
+
+
+
+
+    const updatedBlock: ToolCallBlock = {
+
+
+
+
+
+
+
+      ...block,
+
+
+
+
+
+
+
+      status,
+
+
+
+
+
+
+
+      output: finalOutput,
+
+
+
+
+
+
+
+      error,
+
+
+
+
+
+
+
+      completedAt: now,
+
+
+
+
+
+
+
+      duration,
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const updatedBlocks = [...currentMessage.blocks]
+
+
+
+
+
+
+
+    updatedBlocks[blockIndex] = updatedBlock
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set((state) => ({
+
+
+
+
+
+
+
+      currentMessage: state.currentMessage
+
+
+
+
+
+
+
+        ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+
+
+
+
+        : null,
+
+
+
+
+
+
+
+    }))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏇存柊娑堟伅鍒楄〃涓殑娑堟伅
+
+
+
+
+
+
+
+    get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鍚屾鍒板伐鍏烽潰鏉?
+
+
+
+
+
+
+
+    toolPanelStore.updateTool(toolId, {
+
+
+
+
+
+
+
+      status,
+
+
+
+
+
+
+
+      output: output ? String(output) : undefined,
+
+
+
+
+
+
+
+      completedAt: now,
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏇存柊杩涘害娑堟伅
+
+
+
+
+
+
+
+    const summary = generateToolSummary(block.name, block.input, status)
+
+
+
+
+
+
+
+    set({ progressMessage: summary })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  appendToolCallOutput: (toolId, chunk) => {
+
+
+
+    const { currentMessage, toolBlockMap } = get()
+
+
+
+    const toolPanelStore = useToolPanelStore.getState()
+
+
+
+    const blockIndex = toolBlockMap.get(toolId)
+
+
+
+
+
+
+
+    if (!currentMessage || blockIndex === undefined) {
+
+
+
+      console.warn('[EventChatStore] Tool block not found:', toolId)
+
+
+
+      return
+
+
+
+    }
+
+
+
+
+
+
+
+    const block = currentMessage.blocks[blockIndex]
+
+
+
+    if (!block || block.type !== 'tool_call') {
+
+
+
+      console.warn('[EventChatStore] Invalid tool block at index:', blockIndex)
+
+
+
+      return
+
+
+
+    }
+
+
+
+
+
+
+
+    const output = `${block.output || ''}${chunk}`
+
+
+
+    const updatedBlock: ToolCallBlock = {
+
+
+
+      ...block,
+
+
+
+      status: 'running',
+
+
+
+      output,
+
+
+
+    }
+
+
+
+
+
+
+
+    const updatedBlocks = [...currentMessage.blocks]
+
+
+
+    updatedBlocks[blockIndex] = updatedBlock
+
+
+
+
+
+
+
+    set((state) => ({
+
+
+
+      currentMessage: state.currentMessage
+
+
+
+        ? { ...state.currentMessage, blocks: updatedBlocks }
+
+
+
+        : null,
+
+
+
+    }))
+
+
+
+
+
+
+
+    get().updateCurrentAssistantMessage(updatedBlocks)
+
+
+
+
+
+
+
+    toolPanelStore.updateTool(toolId, {
+
+
+
+      status: 'running',
+
+
+
+      output,
+
+
+
+    })
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 鏇存柊褰撳墠 Assistant 娑堟伅锛堝唴閮ㄦ柟娉曪級
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  updateCurrentAssistantMessage: (blocks: ContentBlock[]) => {
+
+
+
+
+
+
+
+    const { currentMessage } = get()
+
+
+
+
+
+
+
+    if (!currentMessage) return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set((state) => ({
+
+
+
+
+
+
+
+      messages: state.messages.map(msg =>
+
+
+
+
+
+
+
+        msg.id === currentMessage!.id
+
+
+
+
+
+
+
+          ? { ...msg, blocks } as AssistantChatMessage
+
+
+
+
+
+
+
+          : msg
+
+
+
+
+
+
+
+      ),
+
+
+
+
+
+
+
+    }))
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 鍒濆鍖栦簨浠剁洃鍚?
+
+
+
+
+
+
+
+   * 杩欐槸浜嬩欢椹卞姩鏋舵瀯鐨勬牳蹇冩柟娉?
+
+
+
+
+
+
+
+   *
+
+
+
+
+
+
+
+   * 鏋舵瀯璇存槑锛堜紭鍖栧悗锛夛細
+
+
+
+
+
+
+
+   * 1. 鐩戝惉 Tauri 'chat-event'锛圫treamEvent 鍘熷鏍煎紡锛?
+
+
+
+
+
+
+
+   * 2. convertStreamEventToAIEvents() 杞崲涓?AIEvent
+
+
+
+
+
+
+
+   * 3. eventBus.emit() 鍙戦€佸埌 EventBus锛圖eveloperPanel 璁㈤槄锛?
+
+
+
+
+
+
+
+   * 4. handleAIEvent() 鏇存柊鏈湴鐘舵€?
+
+
+
+
+
+
+
+   *
+
+
+
+
+
+
+
+   * 浼樺寲鏁堟灉锛?
+
+
+
+
+
+
+
+   * - 娑堥櫎浜嗛噸澶嶇殑 switch (streamEvent.type) 閫昏緫
+
+
+
+
+
+
+
+   * - 缁熶竴浣跨敤 AIEvent 杩涜鐘舵€佹洿鏂?
+
+
+
+
+
+
+
+   * - 浠ｇ爜鍑忓皯绾?100 琛?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  initializeEventListeners: () => {
+
+
+
+
+
+
+
+    const cleanupCallbacks: Array<() => void> = []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鑾峰彇 EventBus 鍗曚緥
+
+
+
+
+
+
+
+    const eventBus = getEventBus({ debug: false })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // ========== 鐩戝惉 Tauri chat-event锛堟ˉ鎺?IFlow/Claude Code 浜嬩欢锛?==========
+
+
+
+
+
+
+
+    // 閫氳繃缁熶竴鐨勬湇鍔″眰鐩戝惉鍚庣浜嬩欢
+
+
+
+
+
+
+
+    listenEvent<unknown>('chat-event', (payload) => {
+
+
+
+
+
+
+
+      try {
+
+
+
+
+
+
+
+        const streamEvent = parseStreamEventPayload(payload)
+
+
+
+
+
+
+
+        if (!streamEvent) return
+
+
+
+
+
+
+
+        const state = get()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        console.log('[EventChatStore] 鏀跺埌 chat-event:', streamEvent.type)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // ========== 姝ラ 1锛氳浆鎹负 AIEvent ==========
+
+
+
+
+
+
+
+        const aiEvents = convertStreamEventToAIEvents(streamEvent, state.conversationId)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // ========== 姝ラ 2锛氬鐞嗘瘡涓?AIEvent ==========
+
+
+
+
+
+
+
+        for (const aiEvent of aiEvents) {
+
+
+
+
+
+
+
+          // 2.1 鍙戦€佸埌 EventBus锛圖eveloperPanel 鍙互璁㈤槄锛?
+
+
+
+
+
+
+
+          eventBus.emit(aiEvent)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          // 2.2 鏇存柊鏈湴鐘舵€?
+
+
+
+
+
+
+
+          handleAIEvent(aiEvent, set, get)
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      } catch (e) {
+
+
+
+
+
+
+
+        console.error('[EventChatStore] 瑙ｆ瀽 chat-event 澶辫触:', e)
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    }).then((unlisten) => {
+
+
+
+
+
+
+
+      cleanupCallbacks.push(unlisten)
+
+
+
+
+
+
+
+    }).catch((err) => {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 鐩戝惉 chat-event 澶辫触:', err)
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 杩斿洖娓呯悊鍑芥暟
+
+
+
+
+
+
+
+    return () => {
+
+
+
+
+
+
+
+      cleanupCallbacks.forEach((cleanup) => cleanup())
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  sendMessage: async (content, workspaceDir) => {
+
+
+
+
+
+
+
+    const { conversationId } = get()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鑾峰彇宸ヤ綔鍖轰俊鎭紙鍖呮嫭鍏宠仈宸ヤ綔鍖猴級
+
+
+
+
+
+
+
+    const workspaceStore = useWorkspaceStore.getState()
+
+
+
+
+
+
+
+    const currentWorkspace = workspaceStore.getCurrentWorkspace()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 濡傛灉娌℃湁宸ヤ綔鍖猴紝涓嶅厑璁稿彂閫佹秷鎭?
+
+
+
+
+
+
+
+    if (!currentWorkspace) {
+
+
+
+
+
+
+
+      set({ error: '璇峰厛鍒涘缓鎴栭€夋嫨涓€涓伐浣滃尯' })
+
+
+
+
+
+
+
+      return
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鑾峰彇褰撳墠宸ヤ綔鍖鸿矾寰勪綔涓洪粯璁ゅ€?
+
+
+
+
+
+
+
+    const actualWorkspaceDir = workspaceDir ?? currentWorkspace.path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 瑙ｆ瀽宸ヤ綔鍖哄紩鐢紙鍙鐞嗘枃浠跺紩鐢紝涓嶅啀鐢熸垚 contextHeader锛?
+
+
+
+
+
+
+
+    const { processedMessage } = parseWorkspaceReferences(
+
+
+
+
+
+
+
+      content,
+
+
+
+
+
+
+
+      workspaceStore.workspaces,
+
+
+
+
+
+
+
+      workspaceStore.getContextWorkspaces(),
+
+
+
+
+
+
+
+      workspaceStore.currentWorkspaceId
+
+
+
+
+
+
+
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鏋勫缓绯荤粺鎻愮ず璇嶏紙鐢ㄤ簬 --system-prompt 鍙傛暟锛?
+
+
+
+
+
+
+
+    const systemPrompt = buildSystemPrompt(
+
+
+
+
+
+
+
+      workspaceStore.workspaces,
+
+
+
+
+
+
+
+      workspaceStore.getContextWorkspaces(),
+
+
+
+
+
+
+
+      workspaceStore.currentWorkspaceId
+
+
+
+
+
+
+
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 瑙勮寖鍖栨秷鎭唴瀹癸細灏嗘崲琛岀鏇挎崲涓?\\n 瀛楃涓?
+
+
+
+
+
+
+
+    const normalizedMessage = processedMessage
+
+
+
+
+
+
+
+      .replace(/\r\n/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\r/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\n/g, '\\n')
+
+
+
+
+
+
+
+      .trim()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 瑙勮寖鍖栫郴缁熸彁绀鸿瘝涓殑鎹㈣
+
+
+
+
+
+
+
+    const normalizedSystemPrompt = systemPrompt
+
+
+
+
+
+
+
+      .replace(/\r\n/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\r/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\n/g, '\\n')
+
+
+
+
+
+
+
+      .trim()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 娣诲姞鐢ㄦ埛娑堟伅锛堜娇鐢ㄥ師濮嬪唴瀹规樉绀猴級
+
+
+
+
+
+
+
+    const userMessage: UserChatMessage = {
+
+
+
+
+
+
+
+      id: crypto.randomUUID(),
+
+
+
+
+
+
+
+      type: 'user',
+
+
+
+
+
+
+
+      content, // 淇濇寔鍘熷鍐呭鏄剧ず
+
+
+
+
+
+
+
+      timestamp: new Date().toISOString(),
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+    get().addMessage(userMessage)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set({
+
+
+
+
+
+
+
+      isStreaming: true,
+
+
+
+
+
+
+
+      error: null,
+
+
+
+
+
+
+
+      currentMessage: null,
+
+
+
+
+
+
+
+      toolBlockMap: new Map(),
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    useToolPanelStore.getState().clearTools()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      if (conversationId) {
+
+
+
+
+
+
+
+        await tauriContinueChat({
+
+
+
+
+
+
+
+          sessionId: conversationId,
+
+
+
+
+
+
+
+          message: normalizedMessage,
+
+
+
+
+
+
+
+          systemPrompt: normalizedSystemPrompt,
+
+
+
+
+
+
+
+          workDir: actualWorkspaceDir,
+
+
+
+
+
+
+
+        })
+
+
+
+
+
+
+
+      } else {
+
+
+
+
+
+
+
+        const newSessionId = await tauriStartChat({
+
+
+
+
+
+
+
+          message: normalizedMessage,
+
+
+
+
+
+
+
+          systemPrompt: normalizedSystemPrompt,
+
+
+
+
+
+
+
+          workDir: actualWorkspaceDir,
+
+
+
+
+
+
+
+        })
+
+
+
+
+
+
+
+        set({ conversationId: newSessionId })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      set({
+
+
+
+
+
+
+
+        error: extractErrorMessage(e, '发送消息失败'),
+
+
+
+
+
+
+
+        isStreaming: false,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  continueChat: async (prompt = '') => {
+
+
+
+
+
+
+
+    const { conversationId } = get()
+
+
+
+
+
+
+
+    if (!conversationId) {
+
+
+
+
+
+
+
+      set({ error: '娌℃湁娲诲姩浼氳瘽', isStreaming: false })
+
+
+
+
+
+
+
+      return
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鑾峰彇褰撳墠宸ヤ綔鍖鸿矾寰勪綔涓洪粯璁ゅ€?
+
+
+
+
+
+
+
+    const actualWorkspaceDir = useWorkspaceStore.getState().getCurrentWorkspace()?.path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 瑙勮寖鍖栨秷鎭唴瀹癸細灏嗘崲琛岀鏇挎崲涓?\\n 瀛楃涓?
+
+
+
+
+
+
+
+    // 閬垮厤 iFlow CLI 鍙傛暟瑙ｆ瀽鍣ㄦ棤娉曟纭鐞嗗寘鍚疄闄呮崲琛岀鐨勫弬鏁板€?
+
+
+
+
+
+
+
+    const normalizedPrompt = prompt
+
+
+
+
+
+
+
+      .replace(/\r\n/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\r/g, '\\n')
+
+
+
+
+
+
+
+      .replace(/\n/g, '\\n')
+
+
+
+
+
+
+
+      .trim()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set({ isStreaming: true, error: null })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      await tauriContinueChat({
+
+
+
+
+
+
+
+        sessionId: conversationId,
+
+
+
+
+
+
+
+        message: normalizedPrompt,
+
+
+
+
+
+
+
+        workDir: actualWorkspaceDir,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      set({
+
+
+
+
+
+
+
+        error: extractErrorMessage(e, '继续对话失败'),
+
+
+
+
+
+
+
+        isStreaming: false,
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  interruptChat: async () => {
+
+
+
+
+
+
+
+    const { conversationId, tokenBuffer } = get()
+
+
+
+
+
+
+
+    if (!conversationId) return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // 鍏堝埛鏂?TokenBuffer锛岀‘淇濆凡鎺ユ敹鐨勫唴瀹规樉绀哄嚭鏉ワ紝鍐嶉噸缃?
+
+
+
+
+
+
+
+    if (tokenBuffer) {
+
+
+
+
+
+
+
+      tokenBuffer.end()
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      await tauriInterruptChat(conversationId)
+
+
+
+
+
+
+
+      set({ isStreaming: false })
+
+
+
+
+
+
+
+      get().finishMessage()
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] Interrupt failed:', e)
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  setMaxMessages: (max) => {
+
+
+
+
+
+
+
+    set({ maxMessages: Math.max(100, max) })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const { messages, archivedMessages } = get()
+
+
+
+
+
+
+
+    if (messages.length > max) {
+
+
+
+
+
+
+
+      const archiveCount = messages.length - max
+
+
+
+
+
+
+
+      const toArchive = messages.slice(0, archiveCount)
+
+
+
+
+
+
+
+      const remaining = messages.slice(archiveCount)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      set({
+
+
+
+
+
+
+
+        messages: remaining,
+
+
+
+
+
+
+
+        archivedMessages: [...toArchive, ...archivedMessages] as ChatMessage[],
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  toggleArchive: () => {
+
+
+
+
+
+
+
+    set((state) => ({
+
+
+
+
+
+
+
+      isArchiveExpanded: !state.isArchiveExpanded,
+
+
+
+
+
+
+
+    }))
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  loadArchivedMessages: () => {
+
+
+
+
+
+
+
+    const { archivedMessages } = get()
+
+
+
+
+
+
+
+    if (archivedMessages.length === 0) return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    set({
+
+
+
+
+
+
+
+      messages: [...archivedMessages, ...get().messages],
+
+
+
+
+
+
+
+      archivedMessages: [],
+
+
+
+
+
+
+
+      isArchiveExpanded: false,
+
+
+
+
+
+
+
+    })
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  saveToStorage: () => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      const state = get()
+
+
+
+
+
+
+
+      const data = {
+
+
+
+
+
+
+
+        version: STORAGE_VERSION,
+
+
+
+
+
+
+
+        timestamp: new Date().toISOString(),
+
+
+
+
+
+
+
+        messages: state.messages,
+
+
+
+
+
+
+
+        archivedMessages: state.archivedMessages,
+
+
+
+
+
+
+
+        conversationId: state.conversationId,
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 淇濆瓨鐘舵€佸け璐?', e)
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  restoreFromStorage: () => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      const stored = sessionStorage.getItem(STORAGE_KEY)
+
+
+
+
+
+
+
+      if (!stored) return false
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      const data = JSON.parse(stored)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      if (data.version !== STORAGE_VERSION) {
+
+
+
+
+
+
+
+        console.warn('[EventChatStore] 瀛樺偍鐗堟湰涓嶅尮閰嶏紝蹇界暐')
+
+
+
+
+
+
+
+        return false
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      const storedTime = new Date(data.timestamp).getTime()
+
+
+
+
+
+
+
+      const now = Date.now()
+
+
+
+
+
+
+
+      if (now - storedTime > 60 * 60 * 1000) {
+
+
+
+
+
+
+
+        sessionStorage.removeItem(STORAGE_KEY)
+
+
+
+
+
+
+
+        return false
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      set({
+
+
+
+
+
+
+
+        messages: data.messages || [],
+
+
+
+
+
+
+
+        archivedMessages: data.archivedMessages || [],
+
+
+
+
+
+
+
+        conversationId: data.conversationId || null,
+
+
+
+
+
+
+
+        isStreaming: false,
+
+
+
+
+
+
+
+        isInitialized: true,
+
+
+
+
+
+
+
+        currentMessage: null,
+
+
+
+
+
+
+
+        toolBlockMap: new Map(),
+
+
+
+
+
+
+
+      })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      sessionStorage.removeItem(STORAGE_KEY)
+
+
+
+
+
+
+
+      return true
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 鎭㈠鐘舵€佸け璐?', e)
+
+
+
+
+
+
+
+      return false
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 淇濆瓨浼氳瘽鍒板巻鍙?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  saveToHistory: (title?: string) => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      const state = get()
+
+
+
+
+
+
+
+      if (state.messages.length === 0) return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      const conversationId = state.conversationId || `local-${crypto.randomUUID()}`
+
+
+
+
+
+
+
+      if (!state.conversationId) {
+
+
+
+
+
+
+
+        set({ conversationId })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鑾峰彇褰撳墠寮曟搸 ID
+
+
+
+
+
+
+
+      const config = useConfigStore.getState().config
+
+
+
+
+
+
+
+      const engineId: EngineId = config?.defaultEngine || 'claude-code'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鑾峰彇鐜版湁鍘嗗彶
+
+
+
+
+
+
+
+      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
+
+
+
+
+
+
+
+      const history = historyJson ? JSON.parse(historyJson) : []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鐢熸垚鏍囬锛堜粠绗竴鏉＄敤鎴锋秷鎭彁鍙栵級
+
+
+
+
+
+
+
+      const firstUserMessage = state.messages.find(m => m.type === 'user')
+
+
+
+
+
+
+
+      let sessionTitle = title || '新对话'
+
+
+
+
+
+
+
+      if (!title && firstUserMessage && 'content' in firstUserMessage) {
+
+
+
+
+
+
+
+        sessionTitle = (firstUserMessage.content as string).slice(0, 50) + '...'
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鍒涘缓鍘嗗彶璁板綍
+
+
+
+
+
+
+
+      const historyEntry: HistoryEntry = {
+
+
+
+
+
+
+
+        id: conversationId,
+
+
+
+
+
+
+
+        title: sessionTitle,
+
+
+
+
+
+
+
+        timestamp: new Date().toISOString(),
+
+
+
+
+
+
+
+        messageCount: state.messages.length,
+
+
+
+
+
+
+
+        engineId,
+
+
+
+
+
+
+
+        data: {
+
+
+
+
+
+
+
+          messages: state.messages,
+
+
+
+
+
+
+
+          archivedMessages: state.archivedMessages,
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 绉婚櫎鍚孖D鐨勬棫璁板綍
+
+
+
+
+
+
+
+      const filteredHistory = history.filter((h: HistoryEntry) => h.id !== conversationId)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 娣诲姞鏂拌褰曞埌寮€澶?
+
+
+
+
+
+
+
+      filteredHistory.unshift(historyEntry)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 闄愬埗鍘嗗彶鏁伴噺
+
+
+
+
+
+
+
+      const limitedHistory = filteredHistory.slice(0, MAX_SESSION_HISTORY)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(limitedHistory))
+
+
+
+
+
+
+
+      console.log('[EventChatStore] 浼氳瘽宸蹭繚瀛樺埌鍘嗗彶:', sessionTitle, '寮曟搸:', engineId)
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 淇濆瓨鍘嗗彶澶辫触:', e)
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 鑾峰彇缁熶竴浼氳瘽鍘嗗彶锛堝寘鍚?localStorage銆両Flow 鍜?Claude Code 鍘熺敓锛?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  getUnifiedHistory: async () => {
+
+
+
+
+
+
+
+    const items: UnifiedHistoryItem[] = []
+
+
+
+
+
+
+
+    const iflowService = getIFlowHistoryService()
+
+
+
+
+
+
+
+    const claudeCodeService = getClaudeCodeHistoryService()
+
+
+
+
+
+
+
+    const workspaceStore = useWorkspaceStore.getState()
+
+
+
+
+
+
+
+    const currentWorkspace = workspaceStore.getCurrentWorkspace()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      // 1. 鑾峰彇 localStorage 涓殑浼氳瘽鍘嗗彶
+
+
+
+
+
+
+
+      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
+
+
+
+
+
+
+
+      const localHistory: HistoryEntry[] = historyJson ? JSON.parse(historyJson) : []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      for (const h of localHistory) {
+
+
+
+
+
+
+
+        items.push({
+
+
+
+
+
+
+
+          id: h.id,
+
+
+
+
+
+
+
+          title: h.title,
+
+
+
+
+
+
+
+          timestamp: h.timestamp,
+
+
+
+
+
+
+
+          messageCount: h.messageCount,
+
+
+
+
+
+
+
+          engineId: h.engineId || 'claude-code',
+
+
+
+
+
+
+
+          source: 'local',
+
+
+
+
+
+
+
+        })
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 2. 鑾峰彇 Claude Code 鍘熺敓浼氳瘽鍒楄〃
+
+
+
+
+
+
+
+      try {
+
+
+
+
+
+
+
+        const claudeCodeSessions = await claudeCodeService.listSessions(
+
+
+
+
+
+
+
+          currentWorkspace?.path
+
+
+
+
+
+
+
+        )
+
+
+
+
+
+
+
+        for (const session of claudeCodeSessions) {
+
+
+
+
+
+
+
+          // 鎺掗櫎宸茬粡瀛樺湪鐨勪細璇?
+
+
+
+
+
+
+
+          if (!items.find(item => item.id === session.sessionId)) {
+
+
+
+
+
+
+
+            items.push({
+
+
+
+
+
+
+
+              id: session.sessionId,
+
+
+
+
+
+
+
+              title: session.firstPrompt,
+
+
+
+
+
+
+
+              timestamp: session.modified,
+
+
+
+
+
+
+
+              messageCount: session.messageCount,
+
+
+
+
+
+
+
+              engineId: 'claude-code',
+
+
+
+
+
+
+
+              source: 'claude-code-native',
+
+
+
+
+
+
+
+              fileSize: session.fileSize,
+
+
+
+
+
+
+
+            })
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      } catch (e) {
+
+
+
+
+
+
+
+        console.warn('[EventChatStore] 鑾峰彇 Claude Code 鍘熺敓浼氳瘽澶辫触:', e)
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 3. 鑾峰彇 IFlow 浼氳瘽鍒楄〃锛堝鏋滃綋鍓嶅伐浣滃尯瀛樺湪锛?
+
+
+
+
+
+
+
+      try {
+
+
+
+
+
+
+
+        const iflowSessions = await iflowService.listSessions()
+
+
+
+
+
+
+
+        for (const session of iflowSessions) {
+
+
+
+
+
+
+
+          // 鎺掗櫎宸茬粡瀛樺湪鐨勪細璇濓紙閬垮厤閲嶅锛?
+
+
+
+
+
+
+
+          if (!items.find(item => item.id === session.sessionId)) {
+
+
+
+
+
+
+
+            items.push({
+
+
+
+
+
+
+
+              id: session.sessionId,
+
+
+
+
+
+
+
+              title: session.title,
+
+
+
+
+
+
+
+              timestamp: session.updatedAt,
+
+
+
+
+
+
+
+              messageCount: session.messageCount,
+
+
+
+
+
+
+
+              engineId: 'iflow',
+
+
+
+
+
+
+
+              source: 'iflow',
+
+
+
+
+
+
+
+              fileSize: session.fileSize,
+
+
+
+
+
+
+
+              inputTokens: session.inputTokens,
+
+
+
+
+
+
+
+              outputTokens: session.outputTokens,
+
+
+
+
+
+
+
+            })
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      } catch (e) {
+
+
+
+
+
+
+
+        console.warn('[EventChatStore] 鑾峰彇 IFlow 浼氳瘽澶辫触:', e)
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 4. 鎸夋椂闂存埑鎺掑簭
+
+
+
+
+
+
+
+      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      return items
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 鑾峰彇缁熶竴鍘嗗彶澶辫触:', e)
+
+
+
+
+
+
+
+      return []
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 浠庡巻鍙叉仮澶嶄細璇?
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  restoreFromHistory: async (sessionId: string, engineId?: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini') => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      set({ isLoadingHistory: true })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 1. 鍏堝皾璇曚粠 localStorage 鎭㈠
+
+
+
+
+
+
+
+      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
+
+
+
+
+
+
+
+      const localHistory = historyJson ? JSON.parse(historyJson) : []
+
+
+
+
+
+
+
+      const localSession = localHistory.find((h: HistoryEntry) => h.id === sessionId)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      if (localSession) {
+
+
+
+
+
+
+
+        set({
+
+
+
+
+
+
+
+          messages: localSession.data.messages || [],
+
+
+
+
+
+
+
+          archivedMessages: localSession.data.archivedMessages || [],
+
+
+
+
+
+
+
+          conversationId: localSession.id,
+
+
+
+
+
+
+
+          isStreaming: false,
+
+
+
+
+
+
+
+          error: null,
+
+
+
+
+
+
+
+        })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        get().saveToStorage()
+
+
+
+
+
+
+
+        console.log('[EventChatStore] 宸蹭粠鏈湴鍘嗗彶鎭㈠浼氳瘽:', localSession.title)
+
+
+
+
+
+
+
+        return true
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 2. 灏濊瘯浠?Claude Code 鍘熺敓鍘嗗彶鎭㈠
+
+
+
+
+
+
+
+      if (!engineId || engineId === 'claude-code') {
+
+
+
+
+
+
+
+        const claudeCodeService = getClaudeCodeHistoryService()
+
+
+
+
+
+
+
+        const workspaceStore = useWorkspaceStore.getState()
+
+
+
+
+
+
+
+        const currentWorkspace = workspaceStore.getCurrentWorkspace()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        const messages = await claudeCodeService.getSessionHistory(
+
+
+
+
+
+
+
+          sessionId,
+
+
+
+
+
+
+
+          currentWorkspace?.path
+
+
+
+
+
+
+
+        )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        if (messages.length > 0) {
+
+
+
+
+
+
+
+          // 浣跨敤鏂扮殑 convertToChatMessages 鏂规硶锛岀洿鎺ヨ幏鍙栧寘鍚?blocks 鐨?ChatMessage
+
+
+
+
+
+
+
+          const chatMessages = claudeCodeService.convertToChatMessages(messages)
+
+
+
+
+
+
+
+          const toolCalls = claudeCodeService.extractToolCalls(messages)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          // 璁剧疆宸ュ叿闈㈡澘
+
+
+
+
+
+
+
+          useToolPanelStore.getState().clearTools()
+
+
+
+
+
+
+
+          for (const tool of toolCalls) {
+
+
+
+
+
+
+
+            useToolPanelStore.getState().addTool(tool)
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          set({
+
+
+
+
+
+
+
+            messages: chatMessages,
+
+
+
+
+
+
+
+            archivedMessages: [],
+
+
+
+
+
+
+
+            conversationId: sessionId,
+
+
+
+
+
+
+
+            isStreaming: false,
+
+
+
+
+
+
+
+            error: null,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          console.log('[EventChatStore] 宸蹭粠 Claude Code 鍘熺敓鍘嗗彶鎭㈠浼氳瘽:', sessionId)
+
+
+
+
+
+
+
+          return true
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 3. 濡傛灉鎸囧畾浜?IFlow 鎴栨湭鎸囧畾锛屽皾璇曚粠 IFlow 鎭㈠
+
+
+
+
+
+
+
+      if (!engineId || engineId === 'iflow') {
+
+
+
+
+
+
+
+        const iflowService = getIFlowHistoryService()
+
+
+
+
+
+
+
+        const messages = await iflowService.getSessionHistory(sessionId)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        if (messages.length > 0) {
+
+
+
+
+
+
+
+          const convertedMessages = iflowService.convertMessagesToFormat(messages)
+
+
+
+
+
+
+
+          const toolCalls = iflowService.extractToolCalls(messages)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          // 璁剧疆宸ュ叿闈㈡澘
+
+
+
+
+
+
+
+          useToolPanelStore.getState().clearTools()
+
+
+
+
+
+
+
+          for (const tool of toolCalls) {
+
+
+
+
+
+
+
+            useToolPanelStore.getState().addTool(tool)
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          // 灏?Message 鏍煎紡杞崲涓?ChatMessage 鏍煎紡
+
+
+
+
+
+
+
+          const chatMessages: ChatMessage[] = convertedMessages.map((msg): ChatMessage => {
+
+
+
+
+
+
+
+            if (msg.role === 'user') {
+
+
+
+
+
+
+
+              return {
+
+
+
+
+
+
+
+                id: msg.id,
+
+
+
+
+
+
+
+                type: 'user',
+
+
+
+
+
+
+
+                content: msg.content,
+
+
+
+
+
+
+
+                timestamp: msg.timestamp,
+
+
+
+
+
+
+
+              } as UserChatMessage
+
+
+
+
+
+
+
+            } else if (msg.role === 'assistant') {
+
+
+
+
+
+
+
+              return {
+
+
+
+
+
+
+
+                id: msg.id,
+
+
+
+
+
+
+
+                type: 'assistant',
+
+
+
+
+
+
+
+                blocks: [
+
+
+
+
+
+
+
+                  { type: 'text', content: msg.content }
+
+
+
+
+
+
+
+                ],
+
+
+
+
+
+
+
+                timestamp: msg.timestamp,
+
+
+
+
+
+
+
+                content: msg.content,
+
+
+
+
+
+
+
+                toolSummary: msg.toolSummary,
+
+
+
+
+
+
+
+              } as AssistantChatMessage
+
+
+
+
+
+
+
+            } else {
+
+
+
+
+
+
+
+              return {
+
+
+
+
+
+
+
+                id: msg.id,
+
+
+
+
+
+
+
+                type: 'system',
+
+
+
+
+
+
+
+                content: msg.content,
+
+
+
+
+
+
+
+                timestamp: msg.timestamp,
+
+
+
+
+
+
+
+              } as SystemChatMessage
+
+
+
+
+
+
+
+            }
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          set({
+
+
+
+
+
+
+
+            messages: chatMessages,
+
+
+
+
+
+
+
+            archivedMessages: [],
+
+
+
+
+
+
+
+            conversationId: sessionId,
+
+
+
+
+
+
+
+            isStreaming: false,
+
+
+
+
+
+
+
+            error: null,
+
+
+
+
+
+
+
+          })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          console.log('[EventChatStore] 宸蹭粠 IFlow 鎭㈠浼氳瘽:', sessionId)
+
+
+
+
+
+
+
+          return true
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      return false
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 浠庡巻鍙叉仮澶嶅け璐?', e)
+
+
+
+
+
+
+
+      return false
+
+
+
+
+
+
+
+    } finally {
+
+
+
+
+
+
+
+      set({ isLoadingHistory: false })
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 鍒犻櫎鍘嗗彶浼氳瘽
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  deleteHistorySession: (sessionId: string, source?: 'local' | 'iflow') => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      if (source === 'iflow' || (!source && sessionId.startsWith('session-'))) {
+
+
+
+
+
+
+
+        // IFlow 浼氳瘽涓嶈兘鍒犻櫎锛屽彧鑳藉拷鐣?
+
+
+
+
+
+
+
+        console.log('[EventChatStore] IFlow 浼氳瘽鏃犳硶鍒犻櫎锛屼粎浣滃拷鐣?', sessionId)
+
+
+
+
+
+
+
+        return
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // 鍒犻櫎鏈湴鍘嗗彶
+
+
+
+
+
+
+
+      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
+
+
+
+
+
+
+
+      const history = historyJson ? JSON.parse(historyJson) : []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      const filteredHistory = history.filter((h: HistoryEntry) => h.id !== sessionId)
+
+
+
+
+
+
+
+      localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(filteredHistory))
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 鍒犻櫎鍘嗗彶浼氳瘽澶辫触:', e)
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+
+
+
+
+
+
+
+   * 娓呯┖鍘嗗彶
+
+
+
+
+
+
+
+   */
+
+
+
+
+
+
+
+  clearHistory: () => {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      localStorage.removeItem(SESSION_HISTORY_KEY)
+
+
+
+
+
+
+
+      console.log('[EventChatStore] 历史已清空')
+
+
+
+
+
+
+
+    } catch (e) {
+
+
+
+
+
+
+
+      console.error('[EventChatStore] 娓呯┖鍘嗗彶澶辫触:', e)
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  },
+
+
+
+
+
+
+
+}))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function extractErrorMessage(error: unknown, fallback: string): string {
+
+
+
+
+
+
+
+  if (error instanceof Error) {
+
+
+
+
+
+
+
+    return error.message
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  if (typeof error === 'string') {
+
+
+
+
+
+
+
+    return error
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  if (error && typeof error === 'object') {
+
+
+
+
+
+
+
+    try {
+
+
+
+
+
+
+
+      return JSON.stringify(error)
+
+
+
+
+
+
+
+    } catch {
+
+
+
+
+
+
+
+      return fallback
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  return fallback
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+

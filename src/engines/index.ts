@@ -1,36 +1,25 @@
 /**
  * Engines Registry
- *
- * 导出所有可用的 AI Engine 实现。
  */
 
-// 导出 Claude Code Engine
 export * from './claude-code'
-
-// 导出 IFlow Engine
+export * from './codex-cli'
 export * from './iflow'
+export { GeminiEngine, getGeminiEngine, resetGeminiEngine } from './gemini/engine'
+export type { GeminiEngineConfig } from './gemini/engine'
+export { GeminiSession } from './gemini/session'
+export type { GeminiSessionConfig } from './gemini/session'
+export { GeminiEventParser, convertGeminiEventsToAIEvents } from './gemini/event-parser'
+export type { GeminiStreamEvent } from './gemini/event-parser'
 
-// 未来可以在这里添加其他 Engine
-// export * from './openai'
-// export * from './ollama'
-
-/**
- * 获取所有可用的 Engine IDs
- */
 export function getAvailableEngineIds(): string[] {
-  return ['claude-code', 'iflow']
+  return ['claude-code', 'codex-cli', 'iflow', 'gemini']
 }
 
-/**
- * 获取默认 Engine ID
- */
 export function getDefaultEngineId(): string {
   return 'claude-code'
 }
 
-/**
- * Engine 描述信息
- */
 export interface EngineDescriptor {
   id: string
   name: string
@@ -38,9 +27,6 @@ export interface EngineDescriptor {
   available: boolean
 }
 
-/**
- * 获取所有 Engine 描述信息
- */
 export function getEngineDescriptors(): EngineDescriptor[] {
   return [
     {
@@ -50,9 +36,21 @@ export function getEngineDescriptors(): EngineDescriptor[] {
       available: true,
     },
     {
+      id: 'codex-cli',
+      name: 'Codex CLI',
+      description: 'OpenAI 官方 Codex CLI',
+      available: true,
+    },
+    {
       id: 'iflow',
       name: 'IFlow',
       description: '支持多种 AI 模型的智能编程助手',
+      available: true,
+    },
+    {
+      id: 'gemini',
+      name: 'Gemini CLI',
+      description: 'Google 官方 Gemini CLI',
       available: true,
     },
   ]

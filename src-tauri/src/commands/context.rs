@@ -323,7 +323,7 @@ impl ContextMemoryStore {
     }
 
     fn build_summary(entries: &[ContextEntry]) -> ContextSummary {
-        use std::collections::{HashSet, HashMap};
+        use std::collections::HashSet;
 
         let mut file_count = 0;
         let mut symbol_count = 0;

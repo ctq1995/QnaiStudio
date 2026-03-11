@@ -1,46 +1,69 @@
-/**
- * CLI 路径选择器组件
- * 支持自动检测和手动输入两种模式
- * 支持 Claude Code 和 IFlow 两种引擎
- */
-
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import * as tauri from '../../services/tauri';
 
-type EngineType = 'claude-code' | 'iflow';
+type EngineType = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini';
+type InputMode = 'auto' | 'manual';
 
 interface ClaudePathSelectorProps {
-  /** 当前路径值 */
   value: string;
-  /** 路径变更回调 */
   onChange: (path: string) => void;
-  /** 引擎类型 */
   engineType?: EngineType;
-  /** 是否禁用 */
   disabled?: boolean;
-  /** 是否显示紧凑模式（用于连接蒙版） */
   compact?: boolean;
-  /** 错误提示 */
   error?: string;
-  /** 占位符文本 */
   placeholder?: string;
 }
 
-type InputMode = 'auto' | 'manual';
-
-/** 引擎配置 */
 const ENGINE_CONFIG: Record<EngineType, { name: string; placeholder: string; example: string }> = {
   'claude-code': {
     name: 'Claude Code',
     placeholder: '请输入 Claude CLI 的完整路径',
-    example: '例如: C:\\Users\\[用户名]\\AppData\\Roaming\\npm\\claude.cmd',
+    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\claude.cmd',
   },
-  'iflow': {
+  'codex-cli': {
+    name: 'Codex CLI',
+    placeholder: '请输入 Codex CLI 的完整路径',
+    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\codex.cmd',
+  },
+  iflow: {
     name: 'IFlow',
     placeholder: '请输入 IFlow CLI 的完整路径',
-    example: '例如: C:\\Users\\[用户名]\\AppData\\Roaming\\npm\\iflow.cmd',
+    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\iflow.cmd',
+  },
+  gemini: {
+    name: 'Gemini CLI',
+    placeholder: '请输入 Gemini CLI 的完整路径',
+    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\gemini.cmd',
   },
 };
+
+async function detectPaths(engineType: EngineType): Promise<string[]> {
+  switch (engineType) {
+    case 'codex-cli':
+      return tauri.findCodexPaths();
+    case 'iflow':
+      return tauri.findIFlowPaths();
+    case 'gemini':
+      return tauri.findGeminiPaths();
+    case 'claude-code':
+    default:
+      return tauri.findClaudePaths();
+  }
+}
+
+async function validatePath(engineType: EngineType, path: string) {
+  switch (engineType) {
+    case 'codex-cli':
+      return tauri.validateCodexPath(path);
+    case 'iflow':
+      return tauri.validateIFlowPath(path);
+    case 'gemini':
+      return tauri.validateGeminiPath(path);
+    case 'claude-code':
+    default:
+      return tauri.validateClaudePath(path);
+  }
+}
 
 export function ClaudePathSelector({
   value,
@@ -52,7 +75,6 @@ export function ClaudePathSelector({
   placeholder,
 }: ClaudePathSelectorProps) {
   const config = ENGINE_CONFIG[engineType];
-  // 默认使用手动输入模式，避免一打开就自动检测
   const [mode, setMode] = useState<InputMode>('manual');
   const [detectedPaths, setDetectedPaths] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
@@ -60,29 +82,25 @@ export function ClaudePathSelector({
   const [isValid, setIsValid] = useState<boolean | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  // 检测所有可用的 CLI 路径（根据引擎类型）
-  const detectPaths = async () => {
+  const handleDetectPaths = async () => {
     setDetecting(true);
+
     try {
-      const paths = engineType === 'claude-code'
-        ? await tauri.findClaudePaths()
-        : await tauri.findIFlowPaths();
+      const paths = await detectPaths(engineType);
       setDetectedPaths(paths);
 
-      // 如果有检测结果且当前值为空，自动选择第一个
       if (paths.length > 0 && !value) {
         onChange(paths[0]);
       }
-    } catch (e) {
-      console.error(`检测 ${config.name} 路径失败:`, e);
+    } catch (detectError) {
+      console.error(`检测 ${config.name} 路径失败:`, detectError);
       setDetectedPaths([]);
     } finally {
       setDetecting(false);
     }
   };
 
-  // 验证路径是否有效（根据引擎类型）
-  const validatePath = async (path: string) => {
+  const handleValidatePath = async (path: string) => {
     if (!path.trim()) {
       setIsValid(null);
       setValidationError(null);
@@ -90,40 +108,35 @@ export function ClaudePathSelector({
     }
 
     setValidating(true);
+
     try {
-      const result = engineType === 'claude-code'
-        ? await tauri.validateClaudePath(path)
-        : await tauri.validateIFlowPath(path);
+      const result = await validatePath(engineType, path);
       setIsValid(result.valid);
       setValidationError(result.error || null);
-    } catch (e) {
+    } catch (validateError) {
       setIsValid(false);
-      setValidationError(e instanceof Error ? e.message : '验证失败');
+      setValidationError(validateError instanceof Error ? validateError.message : '校验失败');
     } finally {
       setValidating(false);
     }
   };
 
-  // 切换到自动检测模式时才执行检测
   useEffect(() => {
     if (mode === 'auto') {
-      detectPaths();
+      void handleDetectPaths();
     }
-  }, [mode, engineType]);
+  }, [engineType, mode]);
 
   return (
     <div className="space-y-3">
-      {/* 模式切换 - 左边手动输入，右边自动检测 */}
-      <div className="flex gap-2">
+      <div className="inline-flex rounded-xl border border-border bg-background p-1">
         <button
           type="button"
           onClick={() => setMode('manual')}
           disabled={disabled}
-          className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
-            mode === 'manual'
-              ? 'bg-primary/10 border-primary text-primary'
-              : 'bg-background-surface border-border text-text-secondary hover:border-border-hover'
-          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
+            mode === 'manual' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
         >
           手动输入
         </button>
@@ -131,102 +144,83 @@ export function ClaudePathSelector({
           type="button"
           onClick={() => setMode('auto')}
           disabled={disabled}
-          className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
-            mode === 'auto'
-              ? 'bg-primary/10 border-primary text-primary'
-              : 'bg-background-surface border-border text-text-secondary hover:border-border-hover'
-          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
+            mode === 'auto' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
         >
           自动检测
         </button>
       </div>
 
-      {/* 自动检测模式 */}
       {mode === 'auto' && (
         <div className="space-y-2">
           <div className="flex items-stretch gap-2">
-            <div className="flex-1 min-w-0 relative">
-              <select
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                disabled={disabled || detecting || detectedPaths.length === 0}
-                className={`w-full px-3 py-2 pr-8 bg-background-surface border rounded-l-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:z-10 ${
-                  error ? 'border-danger' : 'border-border'
-                } ${disabled || detecting ? 'opacity-50' : ''}`}
-              >
-                <option value="">请选择 {config.name} CLI 路径</option>
-                {detectedPaths.map((path) => (
-                  <option key={path} value={path}>
-                    {path}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <select
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              disabled={disabled || detecting || detectedPaths.length === 0}
+              className={`min-w-0 flex-1 rounded-xl border bg-background px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${
+                error ? 'border-danger' : 'border-border'
+              } ${disabled || detecting ? 'opacity-50' : ''}`}
+            >
+              <option value="">请选择 {config.name} CLI 路径</option>
+              {detectedPaths.map((path) => (
+                <option key={path} value={path}>
+                  {path}
+                </option>
+              ))}
+            </select>
+
             <button
               type="button"
-              onClick={detectPaths}
+              onClick={() => void handleDetectPaths()}
               disabled={disabled || detecting}
-              className="px-3 bg-background-surface border border-l-0 border-border rounded-r-lg hover:border-border-hover transition-colors disabled:opacity-50 flex items-center justify-center"
+              className="rounded-xl border border-border bg-background px-3 text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
               title="重新检测"
             >
-              <svg
-                className={`w-4 h-4 ${detecting ? 'animate-spin' : ''}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
+              <svg className={`h-4 w-4 ${detecting ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
             </button>
           </div>
 
-          {/* 检测结果提示 */}
-          {detectedPaths.length === 0 && !detecting && (
-            <p className="text-xs text-text-tertiary">
-              未检测到 {config.name} CLI，请确认已安装或尝试手动输入路径
-            </p>
+          {!detecting && detectedPaths.length === 0 && (
+            <p className="text-xs leading-5 text-text-tertiary">未检测到 {config.name}，请确认已安装或改用手动输入。</p>
           )}
+
           {detectedPaths.length > 0 && (
-            <p className="text-xs text-text-tertiary">
-              检测到 {detectedPaths.length} 个可用路径
-            </p>
+            <p className="text-xs text-text-tertiary">共检测到 {detectedPaths.length} 个可用路径。</p>
           )}
         </div>
       )}
 
-      {/* 手动输入模式 */}
       {mode === 'manual' && (
         <div className="space-y-2">
           <div className="relative">
             <input
               type="text"
               value={value}
-              onChange={(e) => {
-                onChange(e.target.value);
-                validatePath(e.target.value);
+              onChange={(event) => {
+                onChange(event.target.value);
+                void handleValidatePath(event.target.value);
               }}
               disabled={disabled || validating}
-              className={`w-full px-3 py-2 pr-10 bg-background-surface border rounded-lg text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary ${
+              className={`w-full rounded-xl border bg-background px-3 py-2 pr-10 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary ${
                 error ? 'border-danger' : 'border-border'
               } ${disabled || validating ? 'opacity-50' : ''}`}
               placeholder={placeholder || config.placeholder}
             />
-            {/* 验证状态图标 */}
+
             {value && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
                 {validating ? (
-                  <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                 ) : isValid === true ? (
-                  <svg className="w-5 h-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="h-5 w-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
                 ) : isValid === false ? (
-                  <svg className="w-5 h-5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="h-5 w-5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 ) : null}
@@ -234,23 +228,13 @@ export function ClaudePathSelector({
             )}
           </div>
 
-          {/* 验证结果提示 */}
-          {validationError && (
-            <p className="text-xs text-danger">{validationError}</p>
-          )}
-          {isValid === true && !compact && (
-            <p className="text-xs text-success">路径有效，可以正常使用</p>
-          )}
-          <p className="text-xs text-text-tertiary">
-            {config.example}
-          </p>
+          {validationError && <p className="text-xs text-danger">{validationError}</p>}
+          {isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
+          {!compact && <p className="text-xs text-text-tertiary">{config.example}</p>}
         </div>
       )}
 
-      {/* 错误提示 */}
-      {error && (
-        <p className="text-xs text-danger">{error}</p>
-      )}
+      {error && <p className="text-xs text-danger">{error}</p>}
     </div>
   );
 }

@@ -3,6 +3,7 @@
  */
 
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useWorkspaceStore } from '../../stores';
 import { Button } from '../Common';
 
@@ -61,8 +62,8 @@ export function CreateWorkspaceModal({ onClose }: CreateWorkspaceModalProps) {
     }
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+  const modal = (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[3000]">
       <div className="bg-background-elevated rounded-xl p-6 w-full max-w-md border border-border shadow-glow">
         <h2 className="text-lg font-semibold text-text-primary mb-4">
           创建新工作区
@@ -134,4 +135,6 @@ export function CreateWorkspaceModal({ onClose }: CreateWorkspaceModalProps) {
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }

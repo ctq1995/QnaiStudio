@@ -23,9 +23,9 @@ import { lintGutter } from '@codemirror/lint';
 import { tags } from '@lezer/highlight';
 
 // 现代化主题
-import { modernTheme } from './modernTheme';
+import { getModernTheme, type EditorThemeMode } from './modernTheme';
 
-const customHighlightStyle = HighlightStyle.define([
+const darkHighlightStyle = HighlightStyle.define([
   // 关键字
   { tag: tags.keyword, color: '#ff7b72', fontWeight: '500' },
   { tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName], color: '#e6edf3' },
@@ -69,6 +69,32 @@ const customHighlightStyle = HighlightStyle.define([
   { tag: tags.list, color: '#58a6ff' },
 ]);
 
+const lightHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: '#7c3aed', fontWeight: '500' },
+  { tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName], color: '#1a1a1f' },
+  { tag: [tags.variableName], color: '#1a1a1f' },
+  { tag: [tags.function(tags.variableName)], color: '#7c3aed', fontWeight: '500' },
+  { tag: [tags.function(tags.propertyName)], color: '#7c3aed' },
+  { tag: [tags.className], color: '#2563eb' },
+  { tag: [tags.typeName], color: '#2563eb' },
+  { tag: tags.string, color: '#b45309' },
+  { tag: tags.number, color: '#dc2626' },
+  { tag: [tags.bool, tags.null, tags.special(tags.variableName)], color: '#dc2626' },
+  { tag: tags.operator, color: '#dc2626' },
+  { tag: tags.comment, color: '#6b7280', fontStyle: 'italic', opacity: 0.85 },
+  { tag: tags.tagName, color: '#059669' },
+  { tag: tags.angleBracket, color: '#1a1a1f' },
+  { tag: tags.attributeName, color: '#2563eb' },
+  { tag: tags.regexp, color: '#dc2626' },
+  { tag: tags.namespace, color: '#7c3aed' },
+  { tag: tags.bracket, color: '#1a1a1f' },
+  { tag: tags.link, color: '#2563eb', textDecoration: 'underline' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.strong, fontWeight: '700' },
+  { tag: tags.heading, fontWeight: '600', color: '#1a1a1f' },
+  { tag: tags.list, color: '#2563eb' },
+]);
+
 // 获取语言扩展
 async function getLanguageExtension(lang: string) {
   const langMap: Record<string, any> = {
@@ -106,6 +132,7 @@ interface EditorProps {
   value: string;
   /** 语言类型 */
   language: string;
+  theme: EditorThemeMode;
   /** 内容变化回调 */
   onChange: (value: string) => void;
   /** 只读模式 */
@@ -119,6 +146,7 @@ interface EditorProps {
 export function CodeMirrorEditor({
   value,
   language,
+  theme,
   onChange,
   readOnly = false,
   onSave,
@@ -163,9 +191,11 @@ export function CodeMirrorEditor({
       }
 
       // 基础扩展数组
+      const themeExtensions = getModernTheme(theme);
+      const highlightStyle = theme === 'light' ? lightHighlightStyle : darkHighlightStyle;
       const extensions = [
-        modernTheme,
-        syntaxHighlighting(customHighlightStyle, { fallback: true }),
+        ...themeExtensions,
+        syntaxHighlighting(highlightStyle, { fallback: true }),
         highlightSpecialChars(),
         drawSelection(),
         dropCursor(),

@@ -1,6 +1,6 @@
-/**
- * 工作区组件统一导出
+﻿/**
+ * 宸ヤ綔鍖虹粍浠剁粺涓€瀵煎嚭
  */
 
-export { WorkspaceSelector } from './WorkspaceSelector';
 export { CreateWorkspaceModal } from './CreateWorkspaceModal';
+

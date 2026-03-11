@@ -2,18 +2,19 @@ mod error;
 mod models;
 mod services;
 mod commands;
+mod utils;
 
 use error::Result;
+use tauri::Manager;
 use models::config::{Config, HealthStatus};
 use services::config_store::ConfigStore;
-use services::logger::Logger;
 use commands::chat::{start_chat, continue_chat, interrupt_chat};
 use commands::chat::{
     list_iflow_sessions, get_iflow_session_history,
     get_iflow_file_contexts, get_iflow_token_stats,
     list_claude_code_sessions, get_claude_code_session_history,
 };
-use commands::{validate_workspace_path, get_directory_info};
+use commands::{append_ai_log, validate_workspace_path, get_directory_info};
 use commands::window::{
     show_floating_window, show_main_window, toggle_floating_window,
     is_floating_window_visible, set_floating_window_position, get_floating_window_position
@@ -79,6 +80,30 @@ fn set_claude_cmd(cmd: String, state: tauri::State<AppState>) -> Result<()> {
     store.set_claude_cmd(cmd)
 }
 
+/// 设置 Codex 命令路径
+#[tauri::command]
+fn set_codex_cmd(cmd: String, state: tauri::State<AppState>) -> Result<()> {
+    let mut store = state.config_store.lock()
+        .map_err(|e| error::AppError::Unknown(e.to_string()))?;
+    store.set_codex_cmd(cmd)
+}
+
+/// 设置 IFlow 命令路径
+#[tauri::command]
+fn set_iflow_cmd(cmd: String, state: tauri::State<AppState>) -> Result<()> {
+    let mut store = state.config_store.lock()
+        .map_err(|e| error::AppError::Unknown(e.to_string()))?;
+    store.set_iflow_cmd(cmd)
+}
+
+/// 设置 Gemini 命令路径
+#[tauri::command]
+fn set_gemini_cmd(cmd: String, state: tauri::State<AppState>) -> Result<()> {
+    let mut store = state.config_store.lock()
+        .map_err(|e| error::AppError::Unknown(e.to_string()))?;
+    store.set_gemini_cmd(cmd)
+}
+
 /// 查找所有可用的 Claude CLI 路径
 #[tauri::command]
 fn find_claude_paths() -> Vec<String> {
@@ -101,6 +126,48 @@ pub struct PathValidationResult {
 #[tauri::command]
 fn validate_claude_path(path: String) -> PathValidationResult {
     match ConfigStore::validate_claude_path(path) {
+        Ok((valid, error, version)) => PathValidationResult {
+            valid,
+            error,
+            version,
+        },
+        Err(_) => PathValidationResult {
+            valid: false,
+            error: Some("验证过程中发生错误".to_string()),
+            version: None,
+        },
+    }
+}
+
+/// 查找所有可用的 Codex CLI 路径
+#[tauri::command]
+fn find_codex_paths() -> Vec<String> {
+    ConfigStore::find_codex_paths()
+}
+
+/// 查找所有可用的 Gemini CLI 路径
+#[tauri::command]
+fn find_gemini_paths() -> Vec<String> {
+    ConfigStore::find_gemini_paths()
+}
+
+/// 验证 Gemini CLI 路径
+#[tauri::command]
+fn validate_gemini_path(path: String) -> PathValidationResult {
+    match ConfigStore::validate_gemini_path(path) {
+        Ok((valid, error, version)) => PathValidationResult { valid, error, version },
+        Err(_) => PathValidationResult {
+            valid: false,
+            error: Some("验证过程中发生错误".to_string()),
+            version: None,
+        },
+    }
+}
+
+/// 验证 Codex CLI 路径
+#[tauri::command]
+fn validate_codex_path(path: String) -> PathValidationResult {
+    match ConfigStore::validate_codex_path(path) {
         Ok((valid, error, version)) => PathValidationResult {
             valid,
             error,
@@ -177,14 +244,28 @@ pub fn run() {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             context_store: Arc::new(Mutex::new(ContextMemoryStore::new())),
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // 配置相关
             get_config,
             update_config,
             set_work_dir,
             set_claude_cmd,
+            set_codex_cmd,
+            set_iflow_cmd,
+            set_gemini_cmd,
             find_claude_paths,
             validate_claude_path,
+            find_codex_paths,
+            validate_codex_path,
+            find_gemini_paths,
+            validate_gemini_path,
             find_iflow_paths,
             validate_iflow_path,
             // 健康检查
@@ -215,6 +296,8 @@ pub fn run() {
             path_exists,
             read_commands,
             search_files,
+            // AI raw logging
+            append_ai_log,
             // 窗口管理相关
             show_floating_window,
             show_main_window,

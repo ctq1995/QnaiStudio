@@ -4,3 +4,4 @@
 
 // 旧版 Hook（兼容性保留）
 export { useChatEvent } from './useChat';
+export { useThrottle, useThrottledCallback } from './useThrottle';

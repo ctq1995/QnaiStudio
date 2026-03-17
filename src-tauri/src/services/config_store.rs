@@ -4,7 +4,9 @@ use crate::utils::encoding::decode_cli_output;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::io::Read;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -30,6 +32,22 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
+    fn sanitize_work_dir(work_dir: &mut Option<PathBuf>) {
+        let Some(dir) = work_dir.as_ref() else {
+            return;
+        };
+
+        if dir.is_dir() {
+            return;
+        }
+
+        eprintln!(
+            "[ConfigStore] 清理无效 workDir: {}",
+            dir.to_string_lossy()
+        );
+        *work_dir = None;
+    }
+
     pub fn new() -> Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| AppError::ConfigError("无法获取配置目录".to_string()))?
@@ -39,10 +57,12 @@ impl ConfigStore {
         let config_path = config_dir.join("config.json");
         let mut config = Self::load_from_file(&config_path)?;
         config.migrate();
+        Self::sanitize_work_dir(&mut config.work_dir);
 
-        Self::hydrate_default_path(&mut config.claude_code.cli_path, "claude");
-        Self::hydrate_default_path(&mut config.codex_cli.cli_path, "codex");
-        Self::hydrate_default_path(&mut config.gemini.cli_path, "gemini");
+        // 快速路径：只用文件系统检查（无子进程），已有有效缓存路径则跳过
+        Self::hydrate_path_fast(&mut config.claude_code.cli_path, "claude");
+        Self::hydrate_path_fast(&mut config.codex_cli.cli_path, "codex");
+        Self::hydrate_path_fast(&mut config.gemini.cli_path, "gemini");
 
         if !config_path.exists() {
             Self::save_config_to_path(&config, &config_path)?;
@@ -51,11 +71,37 @@ impl ConfigStore {
         Ok(Self { config, config_path })
     }
 
-    fn hydrate_default_path(path: &mut String, command_name: &str) {
-        if path == command_name {
-            if let Some(full_path) = Self::resolve_cli_path(command_name) {
-                *path = full_path;
+    /// 仅用文件系统查找，不启动子进程 — 启动路径用
+    fn hydrate_path_fast(path: &mut String, command_name: &str) {
+        // 已有自定义路径（非默认值），且文件存在 → 跳过
+        if path != command_name && Path::new(path).exists() {
+            return;
+        }
+        // 只检查常见候选路径（纯文件系统，无子进程）
+        for candidate in Self::common_cli_candidates(command_name) {
+            if Path::new(&candidate).exists() {
+                *path = candidate;
+                return;
             }
+        }
+        // 若仍是默认占位符，保持原样（等后台 hydrate_default_path 更新）
+    }
+
+    fn hydrate_default_path(path: &mut String, command_name: &str) {
+        // 已有自定义路径（非默认值），且文件存在 → 跳过解析
+        if path != command_name && Path::new(path).exists() {
+            return;
+        }
+        // 快速检查常见路径（纯文件系统操作，无子进程）
+        for candidate in Self::common_cli_candidates(command_name) {
+            if Path::new(&candidate).exists() {
+                *path = candidate;
+                return;
+            }
+        }
+        // 最后才用 PowerShell/where/which 查找
+        if let Some(full_path) = Self::resolve_cli_path(command_name) {
+            *path = full_path;
         }
     }
 
@@ -92,11 +138,28 @@ impl ConfigStore {
     }
 
     pub fn update(&mut self, config: Config) -> Result<()> {
+        let mut config = config;
+        Self::sanitize_work_dir(&mut config.work_dir);
         self.config = config;
         self.save()
     }
 
     pub fn set_work_dir(&mut self, path: Option<PathBuf>) -> Result<()> {
+        if let Some(ref dir) = path {
+            if !dir.exists() {
+                return Err(AppError::InvalidPath(format!(
+                    "工作目录不存在: {}",
+                    dir.to_string_lossy()
+                )));
+            }
+            if !dir.is_dir() {
+                return Err(AppError::InvalidPath(format!(
+                    "工作目录不是目录: {}",
+                    dir.to_string_lossy()
+                )));
+            }
+        }
+
         self.config.work_dir = path;
         self.save()
     }
@@ -175,27 +238,76 @@ impl ConfigStore {
     }
 
     fn detect_version(command_path: &str) -> Option<String> {
-        let output = Command::new(command_path)
+        Self::detect_version_timeout(command_path, Duration::from_secs(3))
+    }
+
+    /// 带超时的版本检测，避免 CLI 卡住阻塞启动
+    fn detect_version_timeout(command_path: &str, timeout: Duration) -> Option<String> {
+        let start = Instant::now();
+        let mut child = Command::new(command_path)
             .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .no_window()
-            .output()
+            .spawn()
             .ok()?;
 
-        if !output.status.success() {
-            return None;
+        // 轮询等待完成，超时则 kill
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        return None;
+                    }
+                    // 进程已退出，读取 stdout
+                    let mut stdout = child.stdout.take()?;
+                    let mut output = Vec::new();
+                    stdout.read_to_end(&mut output).ok()?;
+                    return decode_cli_output(&output)
+                        .lines()
+                        .next()
+                        .map(|line| line.trim().to_string());
+                }
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => return None,
+            }
         }
-
-        decode_cli_output(&output.stdout)
-            .lines()
-            .next()
-            .map(|line| line.trim().to_string())
     }
 
     pub fn health_status(&self) -> HealthStatus {
-        let claude_version = self.detect_claude();
-        let iflow_version = self.detect_iflow();
-        let codex_version = self.detect_codex();
-        let gemini_version = self.detect_gemini();
+        Self::health_status_for_config(&self.config)
+    }
+
+    pub fn health_status_for_config(config: &Config) -> HealthStatus {
+        let claude_cmd = config.get_claude_cmd();
+        let codex_cmd = config.get_codex_cmd();
+        let gemini_cmd = config.get_gemini_cmd();
+        let iflow_path = config.iflow.cli_path.clone()
+            .or_else(Self::find_iflow_path);
+
+        // 并行检测所有引擎版本
+        let (claude_version, iflow_version, codex_version, gemini_version) =
+            std::thread::scope(|s| {
+                let h1 = s.spawn(|| Self::detect_version_timeout(&claude_cmd, Duration::from_secs(3)));
+                let h2 = s.spawn(move || {
+                    iflow_path.and_then(|p| Self::detect_version_timeout(&p, Duration::from_secs(3)))
+                });
+                let h3 = s.spawn(|| Self::detect_version_timeout(&codex_cmd, Duration::from_secs(3)));
+                let h4 = s.spawn(|| Self::detect_version_timeout(&gemini_cmd, Duration::from_secs(3)));
+                (
+                    h1.join().ok().flatten(),
+                    h2.join().ok().flatten(),
+                    h3.join().ok().flatten(),
+                    h4.join().ok().flatten(),
+                )
+            });
 
         HealthStatus {
             claude_available: claude_version.is_some(),
@@ -206,8 +318,7 @@ impl ConfigStore {
             codex_version,
             gemini_available: gemini_version.is_some(),
             gemini_version,
-            work_dir: self
-                .config
+            work_dir: config
                 .work_dir
                 .as_ref()
                 .and_then(|path| path.to_str().map(|value| value.to_string())),
@@ -416,6 +527,9 @@ impl OldConfig {
             default_engine: "claude-code".to_string(),
             claude_code: crate::models::config::ClaudeCodeConfig {
                 cli_path: self.claude_cmd,
+                api_key: None,
+                base_url: None,
+                model: None,
             },
             codex_cli: Default::default(),
             iflow: Default::default(),

@@ -29,15 +29,27 @@ export interface Config {
   defaultEngine: EngineId
   claudeCode: {
     cliPath: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
   }
   iflow: {
     cliPath?: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
   }
   codexCli: {
     cliPath: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
   }
   gemini: {
     cliPath: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
   }
   workDir?: string
   sessionDir?: string

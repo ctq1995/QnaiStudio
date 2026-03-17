@@ -4,6 +4,8 @@ pub mod workspace;
 pub mod file_explorer;
 pub mod window;
 pub mod context;
+pub mod versioning;
+pub mod models;
 
 pub use ai_log::append_ai_log;
 pub use workspace::validate_workspace_path;

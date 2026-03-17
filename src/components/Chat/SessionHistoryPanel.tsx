@@ -1,8 +1,10 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Clock, HardDrive, Loader2, MessageSquare, RefreshCw, RotateCcw, Trash2, X, Zap } from 'lucide-react';
+import { Clock, Download, HardDrive, Loader2, MessageSquare, RefreshCw, RotateCcw, Sparkles, Trash2, X, Zap } from 'lucide-react';
 import { useEventChatStore, type UnifiedHistoryItem } from '../../stores/eventChatStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { getCurrentWorkspaceById } from '../../utils/workspaceScope';
+import { exportToMarkdown, generateFileName } from '../../services/chatExport';
+import { saveChatToFile } from '../../services/tauri';
 
 interface SessionHistoryPanelProps {
   onClose?: () => void;
@@ -56,6 +58,15 @@ function getEngineInfo(item: UnifiedHistoryItem) {
     };
   }
 
+  if (item.engineId === 'gemini') {
+    return {
+      name: 'Gemini CLI',
+      color: 'text-purple-500',
+      badge: 'bg-purple-500/10 text-purple-600 dark:text-purple-300',
+      icon: Sparkles,
+    };
+  }
+
   if (item.engineId === 'codex-cli') {
     return {
       name: 'Codex CLI',
@@ -96,6 +107,8 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  const [exporting, setExporting] = useState<string | null>(null);
 
   const workspaces = useWorkspaceStore((state) => state.workspaces);
   const currentWorkspaceId = useWorkspaceStore((state) => state.currentWorkspaceId);
@@ -139,6 +152,27 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
   const handleDelete = (sessionId: string, source: UnifiedHistoryItem['source']) => {
     useEventChatStore.getState().deleteHistorySession(sessionId, source === 'local' ? 'local' : undefined);
     setHistory((current) => current.filter((item) => item.id !== sessionId));
+  };
+
+  const handleExport = async (item: UnifiedHistoryItem) => {
+    if (item.source !== 'local') {
+      return;
+    }
+    setExporting(item.id);
+    try {
+      const SESSION_HISTORY_KEY = 'event_chat_session_history';
+      const historyJson = localStorage.getItem(SESSION_HISTORY_KEY);
+      const localHistory = historyJson ? JSON.parse(historyJson) : [];
+      const entry = localHistory.find((h: { id: string }) => h.id === item.id);
+      if (!entry?.data?.messages) return;
+      const content = exportToMarkdown(entry.data.messages);
+      const fileName = generateFileName('md');
+      await saveChatToFile(content, fileName);
+    } catch (error) {
+      console.error('[SessionHistoryPanel] 导出失败:', error);
+    } finally {
+      setExporting(null);
+    }
   };
 
   const filteredHistory = useMemo(() => {
@@ -189,6 +223,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
         <FilterButton active={filter === 'claude-code'} label="Claude" onClick={() => setFilter('claude-code')} />
         <FilterButton active={filter === 'codex-cli'} label="Codex" onClick={() => setFilter('codex-cli')} />
         <FilterButton active={filter === 'iflow'} label="IFlow" onClick={() => setFilter('iflow')} />
+        <FilterButton active={filter === 'gemini'} label="Gemini" onClick={() => setFilter('gemini')} />
       </div>
 
       <div className="shrink-0 border-b border-border-subtle px-4 py-3">
@@ -262,6 +297,22 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
                     >
                       {isRestoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                     </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => void handleExport(item)}
+                        disabled={exporting === item.id}
+                        className={[
+                          'rounded-md p-1.5 transition-colors',
+                          exporting === item.id
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'text-text-tertiary hover:bg-background-elevated hover:text-text-primary',
+                        ].join(' ')}
+                        title="导出为 Markdown"
+                      >
+                        {exporting === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                      </button>
+                    )}
                     {canDelete && (
                       <button
                         type="button"

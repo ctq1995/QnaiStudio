@@ -88,6 +88,7 @@ pub fn build_claude_command(args: ClaudeCommandArgs<'_>) -> Result<Command> {
     apply_io_settings(&mut cmd);
     apply_work_dir(&mut cmd, args.config);
     apply_git_bash_env(&mut cmd, args.config);
+    apply_engine_env(&mut cmd, args.config);
     apply_platform_flags(&mut cmd);
     Ok(cmd)
 }
@@ -263,6 +264,7 @@ fn build_node_command(node_exe: &str, cli_js: &str, args: &ClaudeCommandArgs<'_>
     cmd.arg(cli_js);
     apply_resume_arg(&mut cmd, args.resume_session_id);
     apply_system_prompt(&mut cmd, args.system_prompt);
+    apply_model_arg(&mut cmd, args.config);
     apply_stream_args(&mut cmd, args.message);
     cmd
 }
@@ -273,6 +275,7 @@ fn build_direct_command(args: &ClaudeCommandArgs<'_>) -> Command {
     let mut cmd = Command::new(&claude_cmd);
     apply_resume_arg(&mut cmd, args.resume_session_id);
     apply_system_prompt(&mut cmd, args.system_prompt);
+    apply_model_arg(&mut cmd, args.config);
     apply_stream_args(&mut cmd, args.message);
     cmd
 }
@@ -301,6 +304,14 @@ fn apply_stream_args(cmd: &mut Command, message: &str) {
         .arg(message);
 }
 
+fn apply_model_arg(cmd: &mut Command, config: &Config) {
+    if let Some(ref model) = config.claude_code.model {
+        if !model.is_empty() {
+            cmd.arg("--model").arg(model);
+        }
+    }
+}
+
 fn apply_io_settings(cmd: &mut Command) {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 }
@@ -314,6 +325,37 @@ fn apply_work_dir(cmd: &mut Command, config: &Config) {
 fn apply_git_bash_env(cmd: &mut Command, config: &Config) {
     if let Some(ref git_bash_path) = config.git_bin_path {
         cmd.env("CLAUDE_CODE_GIT_BASH_PATH", git_bash_path);
+    }
+}
+
+fn apply_engine_env(cmd: &mut Command, config: &Config) {
+    eprintln!("[apply_engine_env] claude_code config: api_key={:?}, base_url={:?}, model={:?}",
+        config.claude_code.api_key.as_deref().map(|k| if k.len() > 8 { &k[..8] } else { k }),
+        config.claude_code.base_url,
+        config.claude_code.model,
+    );
+
+    // 当 UI 配置了值时，先移除系统环境变量再设置，确保 UI 值优先
+    if let Some(ref api_key) = config.claude_code.api_key {
+        if !api_key.is_empty() {
+            eprintln!("[apply_engine_env] 设置 ANTHROPIC_API_KEY");
+            cmd.env_remove("ANTHROPIC_API_KEY");
+            cmd.env("ANTHROPIC_API_KEY", api_key);
+        }
+    }
+    if let Some(ref base_url) = config.claude_code.base_url {
+        if !base_url.is_empty() {
+            eprintln!("[apply_engine_env] 设置 ANTHROPIC_BASE_URL={}", base_url);
+            cmd.env_remove("ANTHROPIC_BASE_URL");
+            cmd.env("ANTHROPIC_BASE_URL", base_url);
+        }
+    }
+    if let Some(ref model) = config.claude_code.model {
+        if !model.is_empty() {
+            eprintln!("[apply_engine_env] 设置 ANTHROPIC_MODEL={}", model);
+            cmd.env_remove("ANTHROPIC_MODEL");
+            cmd.env("ANTHROPIC_MODEL", model);
+        }
     }
 }
 

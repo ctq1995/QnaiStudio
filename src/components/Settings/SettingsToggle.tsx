@@ -1,17 +1,23 @@
+import { DirtyBadge } from './DirtyBadge';
+
 interface SettingsToggleProps {
   label: string;
   description: string;
   checked: boolean;
   onToggle: () => void;
+  dirty?: boolean;
 }
 
 export function SettingsToggle(props: SettingsToggleProps) {
-  const { label, description, checked, onToggle } = props;
+  const { label, description, checked, onToggle, dirty = false } = props;
 
   return (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background-surface px-4 py-3">
       <div className="min-w-0">
-        <div className="text-sm text-text-primary">{label}</div>
+        <div className="text-sm text-text-primary">
+          {label}
+          <DirtyBadge visible={dirty} />
+        </div>
         <div className="text-xs text-text-secondary mt-1">{description}</div>
       </div>
       <button

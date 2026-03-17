@@ -5,12 +5,21 @@ use std::path::PathBuf;
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeCodeConfig {
     pub cli_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Default for ClaudeCodeConfig {
     fn default() -> Self {
         Self {
             cli_path: "claude".to_string(),
+            api_key: None,
+            base_url: None,
+            model: None,
         }
     }
 }
@@ -19,12 +28,21 @@ impl Default for ClaudeCodeConfig {
 #[serde(rename_all = "camelCase")]
 pub struct CodexCliConfig {
     pub cli_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Default for CodexCliConfig {
     fn default() -> Self {
         Self {
             cli_path: "codex".to_string(),
+            api_key: None,
+            base_url: None,
+            model: None,
         }
     }
 }
@@ -33,11 +51,17 @@ impl Default for CodexCliConfig {
 #[serde(rename_all = "camelCase")]
 pub struct IFlowConfig {
     pub cli_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Default for IFlowConfig {
     fn default() -> Self {
-        Self { cli_path: None }
+        Self { cli_path: None, api_key: None, base_url: None, model: None }
     }
 }
 
@@ -45,12 +69,21 @@ impl Default for IFlowConfig {
 #[serde(rename_all = "camelCase")]
 pub struct GeminiConfig {
     pub cli_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Default for GeminiConfig {
     fn default() -> Self {
         Self {
             cli_path: "gemini".to_string(),
+            api_key: None,
+            base_url: None,
+            model: None,
         }
     }
 }

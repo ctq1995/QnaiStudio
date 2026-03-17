@@ -16,6 +16,7 @@ interface ConfigState {
   connectionState: 'connecting' | 'success' | 'failed';
   error: string | null;
   loadConfig: () => Promise<void>;
+  loadConfigFast: () => Promise<void>;
   updateConfig: (config: Config) => Promise<void>;
   setClaudeCmd: (cmd: string) => Promise<void>;
   setCodexCmd: (cmd: string) => Promise<void>;
@@ -54,9 +55,23 @@ export const useConfigStore = create<ConfigState>((set) => ({
   config: null,
   healthStatus: null,
   loading: false,
-  isConnecting: true,
+  isConnecting: false,
   connectionState: 'connecting',
   error: null,
+
+  // 快速加载：只获取配置，不做健康检查，用于启动时尽快显示窗口
+  loadConfigFast: async () => {
+    set({ loading: true, error: null });
+    try {
+      const config = await tauri.getConfig();
+      set({ config, loading: false });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : '加载配置失败',
+        loading: false,
+      });
+    }
+  },
 
   loadConfig: async () => {
     set({ loading: true, isConnecting: true, error: null, connectionState: 'connecting' });
@@ -85,12 +100,21 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
     try {
       await tauri.updateConfig(config);
-      set({ config, loading: false });
-    } catch (error) {
       set({
-        error: error instanceof Error ? error.message : '更新配置失败',
+        config,
         loading: false,
       });
+
+      // 刷新健康状态可能会调用多个 CLI 的版本检测，耗时较长；这里不阻塞保存流程。
+      // 如果检测失败，会在 refreshHealth 内记录日志并更新 connectionState。
+      void useConfigStore.getState().refreshHealth();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error('更新配置失败');
+      set({
+        error: err.message,
+        loading: false,
+      });
+      throw err;
     }
   },
 

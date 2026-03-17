@@ -97,6 +97,11 @@ export async function healthCheck(): Promise<HealthStatus> {
   return invoke<HealthStatus>('health_check');
 }
 
+/** 测试引擎连接 */
+export async function testEngineConnection(config: Config, engineId: string): Promise<{ success: boolean; message: string }> {
+  return invoke<{ success: boolean; message: string }>('test_engine_connection', { config, engineId });
+}
+
 // ============================================================================
 // 聊天相关命令
 // ============================================================================

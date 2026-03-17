@@ -16,7 +16,7 @@ pub struct GeminiService;
 impl GeminiService {
     pub fn start_chat(config: &Config, message: &str) -> Result<Child> {
         let gemini_cmd = config.get_gemini_cmd();
-        let mut command = Self::build_chat_command(&gemini_cmd, message);
+        let mut command = Self::build_chat_command(&gemini_cmd, message, config);
         Self::apply_common_settings(&mut command, config);
         Self::spawn(command, "启动 Gemini 会话")
     }
@@ -91,7 +91,7 @@ impl GeminiService {
         }
     }
 
-    fn build_chat_command(gemini_cmd: &str, message: &str) -> Command {
+    fn build_chat_command(gemini_cmd: &str, message: &str, config: &Config) -> Command {
         let mut command = Command::new(gemini_cmd);
         // Gemini CLI 使用 --prompt 标志并输出 JSON 流
         command
@@ -100,6 +100,11 @@ impl GeminiService {
             .arg("--output_format")
             .arg("json")
             .arg("--yolo");
+        if let Some(ref model) = config.gemini.model {
+            if !model.is_empty() {
+                command.arg("--model").arg(model);
+            }
+        }
         command
     }
 
@@ -108,6 +113,34 @@ impl GeminiService {
 
         if let Some(ref work_dir) = config.work_dir {
             command.current_dir(work_dir);
+        }
+
+        eprintln!("[GeminiService] gemini config: api_key={:?}, base_url={:?}, model={:?}",
+            config.gemini.api_key.as_deref().map(|k| if k.len() > 8 { &k[..8] } else { k }),
+            config.gemini.base_url,
+            config.gemini.model,
+        );
+        if let Some(ref api_key) = config.gemini.api_key {
+            if !api_key.is_empty() {
+                command.env_remove("GEMINI_API_KEY");
+                command.env_remove("GOOGLE_API_KEY");
+                command.env("GEMINI_API_KEY", api_key);
+                command.env("GOOGLE_API_KEY", api_key);
+            }
+        }
+        if let Some(ref base_url) = config.gemini.base_url {
+            if !base_url.is_empty() {
+                command.env_remove("GEMINI_API_BASE_URL");
+                command.env_remove("GEMINI_BASE_URL");
+                command.env("GEMINI_API_BASE_URL", base_url);
+                command.env("GEMINI_BASE_URL", base_url);
+            }
+        }
+        if let Some(ref model) = config.gemini.model {
+            if !model.is_empty() {
+                command.env_remove("GEMINI_MODEL");
+                command.env("GEMINI_MODEL", model);
+            }
         }
 
         #[cfg(windows)]

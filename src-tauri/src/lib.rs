@@ -23,12 +23,16 @@ use commands::file_explorer::{
     read_directory, get_file_content, create_file, create_directory,
     delete_file, rename_file, path_exists, read_commands, search_files
 };
+use commands::versioning::{
+    list_workspace_versions, create_workspace_version, restore_workspace_version, delete_workspace_version,
+};
 use commands::context::{
     context_upsert, context_upsert_many, context_query, context_get_all,
     context_remove, context_clear,
     ide_report_current_file, ide_report_file_structure, ide_report_diagnostics,
     ContextMemoryStore,
 };
+use commands::models::fetch_models;
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -205,14 +209,19 @@ fn validate_iflow_path(path: String) -> PathValidationResult {
 }
 
 
-/// 健康检查
+/// 健康检查（异步，不阻塞 UI 线程）
 #[tauri::command]
-fn health_check(state: tauri::State<AppState>) -> HealthStatus {
-    let store = state.config_store.lock()
-        .unwrap_or_else(|e| {
-            e.into_inner()
-        });
-    store.health_status()
+async fn health_check(state: tauri::State<'_, AppState>) -> Result<HealthStatus> {
+    let config = {
+        let store = state.config_store.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        store.get().clone()
+    };
+    tokio::task::spawn_blocking(move || {
+        ConfigStore::health_status_for_config(&config)
+    })
+    .await
+    .map_err(|e| error::AppError::Unknown(e.to_string()))
 }
 
 /// 检测 Claude CLI
@@ -223,26 +232,259 @@ fn detect_claude(state: tauri::State<AppState>) -> Option<String> {
     store.detect_claude()
 }
 
+/// 测试引擎连接
+/// 临时应用传入的配置，启动 CLI 发送一个最小 prompt，检查是否能正常响应
+#[tauri::command]
+async fn test_engine_connection(
+    config: Config,
+    engine_id: String,
+) -> std::result::Result<TestConnectionResult, String> {
+    use std::process::{Command, Stdio};
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
+
+    let engine = models::config::EngineId::from_str(&engine_id)
+        .ok_or_else(|| format!("未知引擎: {}", engine_id))?;
+
+    let test_message = "Say exactly: CONNECTION_OK";
+    let timeout = Duration::from_secs(30);
+
+    let mut cmd = match engine {
+        models::config::EngineId::ClaudeCode => {
+            let claude_cmd = config.get_claude_cmd();
+            // 尝试直接运行，如果是 Windows 且是 .cmd 文件则用 node
+            let mut c = Command::new(&claude_cmd);
+            c.arg("--print")
+                .arg("--output-format").arg("text")
+                .arg("--max-turns").arg("1")
+                .arg(test_message);
+            if let Some(ref api_key) = config.claude_code.api_key {
+                if !api_key.is_empty() {
+                    c.env_remove("ANTHROPIC_API_KEY");
+                    c.env("ANTHROPIC_API_KEY", api_key);
+                }
+            }
+            if let Some(ref base_url) = config.claude_code.base_url {
+                if !base_url.is_empty() {
+                    c.env_remove("ANTHROPIC_BASE_URL");
+                    c.env("ANTHROPIC_BASE_URL", base_url);
+                }
+            }
+            if let Some(ref model) = config.claude_code.model {
+                if !model.is_empty() {
+                    c.env_remove("ANTHROPIC_MODEL");
+                    c.env("ANTHROPIC_MODEL", model);
+                    c.arg("--model").arg(model);
+                }
+            }
+            c
+        }
+        models::config::EngineId::CodexCli => {
+            let codex_cmd = config.get_codex_cmd();
+            let mut c = Command::new(&codex_cmd);
+            c.arg("exec")
+                .arg("--json")
+                .arg("--skip-git-repo-check")
+                .arg("--dangerously-bypass-approvals-and-sandbox")
+                .arg(test_message);
+            // Codex CLI 优先读取 config.toml/auth.json，需要用临时 CODEX_HOME 覆盖
+            let has_custom = config.codex_cli.api_key.as_ref().map_or(false, |k| !k.is_empty())
+                || config.codex_cli.base_url.as_ref().map_or(false, |u| !u.is_empty());
+            if has_custom {
+                if let Ok(temp_home) = services::codex_service::CodexService::create_temp_codex_home_for_test(&config) {
+                    c.env("CODEX_HOME", &temp_home);
+                }
+            }
+            if let Some(ref api_key) = config.codex_cli.api_key {
+                if !api_key.is_empty() {
+                    c.env_remove("OPENAI_API_KEY");
+                    c.env("OPENAI_API_KEY", api_key);
+                }
+            }
+            if let Some(ref base_url) = config.codex_cli.base_url {
+                if !base_url.is_empty() {
+                    c.env_remove("OPENAI_BASE_URL");
+                    c.env("OPENAI_BASE_URL", base_url);
+                }
+            }
+            if let Some(ref model) = config.codex_cli.model {
+                if !model.is_empty() {
+                    c.env_remove("OPENAI_MODEL");
+                    c.env("OPENAI_MODEL", model);
+                    c.arg("--model").arg(model);
+                }
+            }
+            c
+        }
+        models::config::EngineId::Gemini => {
+            let gemini_cmd = config.get_gemini_cmd();
+            let mut c = Command::new(&gemini_cmd);
+            c.arg("--prompt").arg(test_message);
+            if let Some(ref api_key) = config.gemini.api_key {
+                if !api_key.is_empty() {
+                    c.env("GEMINI_API_KEY", api_key);
+                    c.env("GOOGLE_API_KEY", api_key);
+                }
+            }
+            if let Some(ref base_url) = config.gemini.base_url {
+                if !base_url.is_empty() {
+                    c.env("GEMINI_BASE_URL", base_url);
+                    c.env("GEMINI_API_BASE_URL", base_url);
+                }
+            }
+            if let Some(ref model) = config.gemini.model {
+                if !model.is_empty() { c.env("GEMINI_MODEL", model); }
+            }
+            c
+        }
+        models::config::EngineId::IFlow => {
+            let iflow_cmd = config.iflow.cli_path.as_deref().unwrap_or("iflow");
+            let mut c = Command::new(iflow_cmd);
+            c.arg("--yolo").arg("--prompt").arg(test_message);
+            if let Some(ref api_key) = config.iflow.api_key {
+                if !api_key.is_empty() { c.env("IFLOW_API_KEY", api_key); }
+            }
+            if let Some(ref base_url) = config.iflow.base_url {
+                if !base_url.is_empty() { c.env("IFLOW_BASE_URL", base_url); }
+            }
+            if let Some(ref model) = config.iflow.model {
+                if !model.is_empty() { c.env("IFLOW_MODEL", model); }
+            }
+            c
+        }
+    };
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 CLI 失败: {}", e))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    // 收集输出（带超时）
+    let start = Instant::now();
+    let mut output_lines = Vec::new();
+    let mut error_lines = Vec::new();
+
+    // 在后台线程读取 stderr
+    let stderr_handle = stderr.map(|se| {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(se);
+            let mut lines = Vec::new();
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    lines.push(l);
+                }
+            }
+            lines
+        })
+    });
+
+    // 读取 stdout（带超时）
+    if let Some(so) = stdout {
+        let reader = BufReader::new(so);
+        for line in reader.lines() {
+            if start.elapsed() > timeout {
+                break;
+            }
+            if let Ok(l) = line {
+                output_lines.push(l);
+                // 收到足够输出就停止
+                if output_lines.len() > 20 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 终止进程
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // 收集 stderr
+    if let Some(handle) = stderr_handle {
+        if let Ok(lines) = handle.join() {
+            error_lines = lines;
+        }
+    }
+
+    let stdout_text = output_lines.join("\n");
+    let stderr_text = error_lines.join("\n");
+    let all_output = format!("{}\n{}", stdout_text, stderr_text);
+
+    // 判断结果
+    let has_output = !stdout_text.trim().is_empty();
+    let has_error_keywords = all_output.contains("error")
+        || all_output.contains("Error")
+        || all_output.contains("unauthorized")
+        || all_output.contains("Unauthorized")
+        || all_output.contains("invalid")
+        || all_output.contains("Invalid")
+        || all_output.contains("denied")
+        || all_output.contains("refused")
+        || all_output.contains("ECONNREFUSED")
+        || all_output.contains("ENOTFOUND")
+        || all_output.contains("timeout")
+        || all_output.contains("401")
+        || all_output.contains("403")
+        || all_output.contains("404")
+        || all_output.contains("429")
+        || all_output.contains("500");
+
+    let success = has_output && !has_error_keywords;
+
+    let message = if success {
+        "连接成功，引擎响应正常".to_string()
+    } else if !has_output && !stderr_text.trim().is_empty() {
+        format!("连接失败:\n{}", stderr_text.chars().take(500).collect::<String>())
+    } else if has_error_keywords {
+        format!("连接异常:\n{}", all_output.chars().take(500).collect::<String>())
+    } else {
+        "未收到引擎响应，请检查配置".to_string()
+    };
+
+    Ok(TestConnectionResult { success, message })
+}
+
+#[derive(serde::Serialize)]
+struct TestConnectionResult {
+    success: bool,
+    message: String,
+}
+
 // ============================================================================
 // Tauri App Builder
 // ============================================================================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 初始化配置存储
-    let config_store = ConfigStore::new()
-        .expect("无法初始化配置存储");
-
     // 默认不启用日志系统
     // let _logger_guard = Logger::init(false);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            config_store: Mutex::new(config_store),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            context_store: Arc::new(Mutex::new(ContextMemoryStore::new())),
+        .setup(|app| {
+            // 在 setup 钩子中初始化 AppState，此时 Tauri 运行时已就绪
+            // ConfigStore::new() 只做文件系统操作（快速路径），不会阻塞窗口显示
+            let config_store = ConfigStore::new()
+                .expect("无法初始化配置存储");
+
+            app.manage(AppState {
+                config_store: Mutex::new(config_store),
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+                context_store: Arc::new(Mutex::new(ContextMemoryStore::new())),
+            });
+
+            Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -271,6 +513,8 @@ pub fn run() {
             // 健康检查
             health_check,
             detect_claude,
+            test_engine_connection,
+            fetch_models,
             // 聊天相关（统一接口）
             start_chat,
             continue_chat,
@@ -296,6 +540,11 @@ pub fn run() {
             path_exists,
             read_commands,
             search_files,
+            // 工作区版本管理
+            list_workspace_versions,
+            create_workspace_version,
+            restore_workspace_version,
+            delete_workspace_version,
             // AI raw logging
             append_ai_log,
             // 窗口管理相关

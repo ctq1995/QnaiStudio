@@ -85,7 +85,7 @@ pub enum StreamEvent {
 }
 
 impl StreamEvent {
-    /// ?? Claude CLI ? stream-json ?
+    /// 解析 Claude CLI stream-json 输出行
     pub fn parse_line(line: &str) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() {
@@ -95,7 +95,7 @@ impl StreamEvent {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(e) => {
-                tracing::debug!("[StreamEvent] JSON ????: {} | {}", e, line);
+                tracing::debug!("[StreamEvent] JSON 解析失败: {} | {}", e, line);
                 return None;
             }
         };
@@ -107,7 +107,7 @@ impl StreamEvent {
         match Self::from_unknown_value(&value) {
             Some(event) => Some(event),
             None => {
-                tracing::debug!("[StreamEvent] ????: {}", line);
+                tracing::debug!("[StreamEvent] 未知事件: {}", line);
                 None
             }
         }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Layout, SettingsModal, FileExplorer, ResizeHandle, ConnectingOverlay, ErrorBoundary } from './components/Common';
+import { KeyboardShortcutsModal } from './components/Common/KeyboardShortcutsModal';
 import { EnhancedChatMessages, ChatInput } from './components/Chat';
 import { ToolPanel } from './components/ToolPanel';
 import { EditorPanel } from './components/Editor';
@@ -8,6 +9,7 @@ import { TopMenuBar as TopMenuBarComponent } from './components/TopMenuBar';
 import { CreateWorkspaceModal } from './components/Workspace';
 import { SessionHistoryPanel } from './components/Chat/SessionHistoryPanel';
 import { useConfigStore, useEventChatStore, useViewStore, useWorkspaceStore, useFloatingWindowStore } from './stores';
+import { TabBar } from './components/Chat/TabBar';
 import * as tauri from './services/tauri';
 import { bootstrapEngines } from './core/engine-bootstrap';
 import { getEngineAvailability, getEngineVersion } from './types';
@@ -17,7 +19,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWorkspaceById } from './utils/workspaceScope';
 import './index.css';
 function App() {
-  const { healthStatus, isConnecting, connectionState, loadConfig, config } = useConfigStore();
+  const { healthStatus, isConnecting, connectionState, loadConfigFast, refreshHealth, config } = useConfigStore();
   const {
     isStreaming,
     sendMessage,
@@ -36,6 +38,10 @@ function App() {
   const currentWorkspacePath = currentWorkspace?.path;
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [workspacesHydrated, setWorkspacesHydrated] = useState(
+    () => useWorkspaceStore.persist?.hasHydrated?.() ?? true,
+  );
   // 使用 ref 确保初始化只执行一次
   const isInitialized = useRef(false);
   const hasCheckedWorkspaces = useRef(false);
@@ -67,6 +73,20 @@ function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // 等待 zustand persist 完成恢复，避免启动时误判“无工作区”
+  useEffect(() => {
+    const onFinish = useWorkspaceStore.persist?.onFinishHydration;
+    if (!onFinish) {
+      setWorkspacesHydrated(true);
+      return;
+    }
+
+    const unsub = onFinish(() => setWorkspacesHydrated(true));
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, []);
+
   const currentEngine = config?.defaultEngine ?? 'claude-code';
   const currentEngineLabel = getEngineLabel(currentEngine);
   const isCurrentEngineAvailable = healthStatus
@@ -97,10 +117,10 @@ function App() {
       isInitialized.current = true;
 
       try {
-        // 先加载配置，获取默认引擎
-        await loadConfig();
+        // 快速加载配置（不做健康检查），尽快显示窗口
+        await loadConfigFast();
 
-        // 显示主窗口（配置加载完毕，UI 已可渲染）
+        // 立即显示主窗口
         await getCurrentWindow().show();
 
         // 获取默认引擎 ID
@@ -115,6 +135,9 @@ function App() {
         if (restored) {
           console.log('[App] 已从本地恢复聊天状态');
         }
+
+        // 后台刷新健康状态，不阻塞启动
+        refreshHealth();
       } catch (error) {
         console.error('[App] 初始化失败', error);
         // 失败时重置标志，允许重试
@@ -130,20 +153,52 @@ function App() {
   // 使用 ref 确保只检查一次，避免重复弹出模态框
   useEffect(() => {
     if (hasCheckedWorkspaces.current) return;
+    if (!workspacesHydrated) return;
 
-    // zustand persist 是异步恢复的，需要等待 workspaces 加载完成
-    // 等待初始化完成后再检查，避免竞态条件
     if (!isInitialized.current) return;
+    hasCheckedWorkspaces.current = true;
 
-    if (workspaces.length === 0) {
-      console.log('[App] 无工作区，显示创建工作区模态框');
-      setShowCreateWorkspace(true);
-      hasCheckedWorkspaces.current = true;
-    } else {
-      // 有工作区，标记已检查
-      hasCheckedWorkspaces.current = true;
-    }
-  }, [workspaces.length, isInitialized.current]); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+
+    const checkWorkspaces = async () => {
+      if (workspaces.length === 0) {
+        console.log('[App] 无工作区，显示创建工作区模态框');
+        if (!cancelled) setShowCreateWorkspace(true);
+        return;
+      }
+
+      const candidates = currentWorkspace
+        ? [currentWorkspace, ...workspaces.filter((w) => w.id !== currentWorkspace.id)]
+        : workspaces;
+
+      for (const ws of candidates) {
+        try {
+          const isValid = await tauri.validateWorkspacePath(ws.path);
+          if (!isValid) continue;
+
+          // 确保后端 workDir 与当前可用工作区同步
+          if (ws.id !== currentWorkspaceId) {
+            await useWorkspaceStore.getState().switchWorkspace(ws.id);
+          }
+          return;
+        } catch (error) {
+          console.error('[App] 校验/切换工作区失败', error);
+        }
+      }
+
+      // 所有工作区路径都不可用，避免后端持有无效 workDir
+      try {
+        await tauri.setWorkDir(null);
+      } catch (error) {
+        console.error('[App] 清空后端工作目录失败', error);
+      }
+
+      if (!cancelled) setShowCreateWorkspace(true);
+    };
+
+    checkWorkspaces();
+    return () => { cancelled = true; };
+  }, [workspacesHydrated, workspaces, currentWorkspace, currentWorkspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 同步当前工作区路径到后端配置
   useEffect(() => {
@@ -314,6 +369,43 @@ function App() {
     }
   }, [config]);
 
+  // 全局快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMod = e.ctrlKey || e.metaKey;
+      const tag = (document.activeElement as HTMLElement)?.tagName;
+      const isInput = tag === 'INPUT' || tag === 'TEXTAREA';
+
+      if (isMod && e.key === 'f') {
+        e.preventDefault();
+        window.dispatchEvent(new Event('chat:open-search'));
+        return;
+      }
+      if (isMod && e.key === 'n') {
+        e.preventDefault();
+        useEventChatStore.getState().clearMessages();
+        return;
+      }
+      if (isMod && e.key === 'k') {
+        e.preventDefault();
+        const textarea = document.querySelector<HTMLTextAreaElement>('textarea');
+        textarea?.focus();
+        return;
+      }
+      if (e.key === 'Escape' && isStreaming) {
+        e.preventDefault();
+        interruptChat();
+        return;
+      }
+      if (e.key === '?' && !isInput) {
+        e.preventDefault();
+        setShowShortcuts(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isStreaming, interruptChat]);
+
   // Sidebar 拖拽处理（右边手柄）
   const handleSidebarResize = (delta: number) => {
     const newWidth = Math.max(150, Math.min(600, sidebarWidth + delta));
@@ -401,6 +493,7 @@ function App() {
               )}
 
               <div className="flex min-w-[320px] flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft">
+                <TabBar />
                 <EnhancedChatMessages />
 
                 <div className="border-t border-border bg-background-base/40">
@@ -450,6 +543,10 @@ function App() {
 
         {showCreateWorkspace && (
           <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />
+        )}
+
+        {showShortcuts && (
+          <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />
         )}
 
         {showSessionHistory && (

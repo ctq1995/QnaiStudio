@@ -85,15 +85,17 @@ const ToolSummary = memo(function ToolSummary({ summary }: { summary: NonNullabl
 /** 用户消息组件（独立 memo 化，避免不必要的重渲染） */
 const UserMessage = memo(function UserMessage({ content }: { content: string }) {
   return (
-    <div className="flex justify-end mb-6 gap-2 items-end">
-      <div className="max-w-[85%] px-4 py-3 rounded-2xl
-                  bg-gradient-to-br from-primary to-primary-600
-                  text-white shadow-glow">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">
-          {content}
+    <div className="flex justify-end mb-6 gap-2 items-start">
+      <div className="flex flex-col items-end gap-1 max-w-[85%]">
+        <div className="px-4 py-3 rounded-2xl
+                    bg-gradient-to-br from-primary to-primary-600
+                    text-white shadow-glow">
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">
+            {content}
+          </div>
         </div>
       </div>
-      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0">
+      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0 mt-0">
         <UserRound className="w-4 h-4" />
       </div>
     </div>
@@ -133,10 +135,10 @@ const ClaudeMessage = memo(function ClaudeMessage({
   const hasMermaid = mermaidBlocks.length > 0;
 
   return (
-    <div className="flex gap-3 mb-6">
+    <div className="flex gap-3 mb-6 items-start">
       {/* Avatar */}
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary-600
-                      flex items-center justify-center shadow-glow shrink-0">
+                      flex items-center justify-center shadow-glow shrink-0 mt-0">
         <span className="text-sm font-bold text-white">P</span>
       </div>
 

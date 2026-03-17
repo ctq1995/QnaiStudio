@@ -120,7 +120,7 @@ impl IFlowService {
         let iflow_cmd = Self::get_iflow_cmd(config)?;
 
         // 构建命令
-        let mut cmd = Self::build_iflow_command(&iflow_cmd, &work_dir, message);
+        let mut cmd = Self::build_iflow_command(&iflow_cmd, &work_dir, message, config);
 
         // 记录详细的命令信息用于调试
         let program = cmd.get_program().to_string_lossy().to_string();
@@ -164,7 +164,7 @@ impl IFlowService {
     }
 
     /// 构建 IFlow 命令
-    fn build_iflow_command(iflow_cmd: &str, work_dir: &str, message: &str) -> Command {
+    fn build_iflow_command(iflow_cmd: &str, work_dir: &str, message: &str, config: &Config) -> Command {
         let mut cmd = Command::new(iflow_cmd);
 
         // 基础参数
@@ -181,11 +181,36 @@ impl IFlowService {
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // 注入环境变量
+        Self::apply_engine_env(&mut cmd, config);
+
         // Windows 上隐藏窗口
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         cmd
+    }
+
+    /// 将 IFlow 配置中的 API 参数注入为环境变量
+    fn apply_engine_env(cmd: &mut Command, config: &Config) {
+        if let Some(ref api_key) = config.iflow.api_key {
+            if !api_key.is_empty() {
+                cmd.env_remove("IFLOW_API_KEY");
+                cmd.env("IFLOW_API_KEY", api_key);
+            }
+        }
+        if let Some(ref base_url) = config.iflow.base_url {
+            if !base_url.is_empty() {
+                cmd.env_remove("IFLOW_BASE_URL");
+                cmd.env("IFLOW_BASE_URL", base_url);
+            }
+        }
+        if let Some(ref model) = config.iflow.model {
+            if !model.is_empty() {
+                cmd.env_remove("IFLOW_MODEL");
+                cmd.env("IFLOW_MODEL", model);
+            }
+        }
     }
 
     /// 监控会话文件并发送事件（类似 tail -f）
@@ -353,6 +378,9 @@ impl IFlowService {
         cmd.current_dir(&work_dir);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // 注入环境变量
+        Self::apply_engine_env(&mut cmd, config);
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);

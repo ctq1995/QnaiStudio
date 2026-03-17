@@ -9,6 +9,22 @@ import * as tauri from '../services/tauri';
 // 搜索取消令牌（用于取消正在进行的搜索）
 let searchAbortController: AbortController | null = null;
 
+function coerceErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+
+  if (error && typeof error === 'object') {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return fallback;
+  }
+}
+
 // 辅助函数：更新文件树中的子节点
 function updateFolderChildren(tree: FileInfo[], folderPath: string, children: FileInfo[]): FileInfo[] {
   return tree.map(file => {
@@ -99,7 +115,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       });
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : '加载目录失败',
+        error: coerceErrorMessage(error, '加载目录失败'),
         loading: false
       });
     }
@@ -153,7 +169,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
 
         return {
           loading_folders: newLoading,
-          error: error instanceof Error ? error.message : '加载文件夹失败',
+          error: coerceErrorMessage(error, '加载文件夹失败'),
         };
       });
     }
@@ -191,7 +207,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       });
     } catch (error) {
       set({ 
-        error: error instanceof Error ? error.message : '刷新目录失败',
+        error: coerceErrorMessage(error, '刷新目录失败'),
         is_refreshing: false 
       });
     }

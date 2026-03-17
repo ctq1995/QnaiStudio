@@ -11,12 +11,14 @@
  * - Edit 工具优化显示
  */
 
-import { useMemo, memo, useState, useCallback, useRef, useDeferredValue } from 'react';
+import { useMemo, memo, useState, useCallback, useRef, useDeferredValue, useEffect } from 'react';
 import React from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { clsx } from 'clsx';
 import type { ChatMessage, UserChatMessage, AssistantChatMessage, ContentBlock, TextBlock, ToolCallBlock } from '../../types';
-import { useConfigStore, useEventChatStore } from '../../stores';
+import { useConfigStore } from '../../stores';
+import { useChatMessageStore } from '../../stores/chat/chatMessageStore';
+import { useChatSessionStore } from '../../stores/chat/chatSessionStore';
 import { getToolConfig, extractToolKeyInfo } from '../../utils/toolConfig';
 import { markdownCache } from '../../utils/cache';
 import { useThrottle } from '../../hooks/useThrottle';
@@ -30,8 +32,9 @@ import {
   type GrepMatch,
   type GrepOutputData
 } from '../../utils/toolSummary';
-import { Check, XCircle, Loader2, AlertTriangle, Play, ChevronDown, ChevronRight, Circle, FileSearch, FolderOpen, Code, FileDiff, UserRound } from 'lucide-react';
+import { Check, XCircle, Loader2, AlertTriangle, Play, ChevronDown, ChevronRight, Circle, FileSearch, FolderOpen, Code, FileDiff, UserRound, Copy, RotateCcw, Trash2 } from 'lucide-react';
 import { ChatNavigator } from './ChatNavigator';
+import { ChatSearch } from './ChatSearch';
 import { groupConversationRounds } from '../../utils/conversationRounds';
 import { splitMarkdownWithMermaid } from '../../utils/markdown';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -46,18 +49,82 @@ function formatContent(content: string): string {
   return markdownCache.render(content);
 }
 
+/** 消息操作栏 */
+function MessageActions({
+  messageId,
+  text,
+  isAssistant,
+}: {
+  messageId: string;
+  text: string;
+  isAssistant?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  const handleDelete = () => {
+    useChatMessageStore.getState().deleteMessage(messageId);
+  };
+
+  const handleRegenerate = () => {
+    void useChatSessionStore.getState().regenerateMessage(messageId);
+  };
+
+  return (
+    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      <button
+        onClick={handleCopy}
+        className="p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-background-surface transition-colors"
+        title="复制"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
+      {isAssistant && (
+        <button
+          onClick={handleRegenerate}
+          className="p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-background-surface transition-colors"
+          title="重新生成"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      )}
+      <button
+        onClick={handleDelete}
+        className="p-1 rounded text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors"
+        title="删除"
+      >
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 /** 用户消息组件 */
 const UserBubble = memo(function UserBubble({ message }: { message: UserChatMessage }) {
   return (
-    <div className="flex justify-end my-2 gap-2 items-end">
-      <div className="max-w-[85%] px-4 py-3 rounded-2xl
-                  bg-gradient-to-br from-primary to-primary-600
-                  text-white shadow-glow">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">
-          {message.content}
+    <div className="group flex justify-end my-2 gap-2 items-start">
+      <div className="flex flex-col items-end gap-1 max-w-[85%]">
+        <div className="flex items-center gap-2">
+          <MessageActions messageId={message.id} text={message.content} />
+          <span className="text-xs text-text-tertiary">
+            {new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        </div>
+        <div className="px-4 py-3 rounded-2xl
+                    bg-gradient-to-br from-primary to-primary-600
+                    text-white shadow-glow">
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">
+            {message.content}
+          </div>
         </div>
       </div>
-      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0">
+      <div className="w-8 h-8 rounded-full bg-background-surface border border-border flex items-center justify-center text-text-tertiary shadow-soft shrink-0 mt-0">
         <UserRound className="w-4 h-4" />
       </div>
     </div>
@@ -934,22 +1001,37 @@ const AssistantBubble = memo(function AssistantBubble({
   engineLabel: string;
 }) {
   const hasBlocks = message.blocks && message.blocks.length > 0;
+  const isError = (message as any).isError === true;
 
   return (
-    <div className="flex gap-3 my-2">
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary-600
-                      flex items-center justify-center shadow-glow shrink-0">
-        <span className="text-sm font-bold text-white">P</span>
+    <div className="group flex gap-3 my-2 items-start">
+      <div className={clsx(
+        "w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0",
+        isError
+          ? "bg-gradient-to-br from-danger to-danger/80 shadow-sm"
+          : "bg-gradient-to-br from-primary to-primary-600 shadow-glow"
+      )}>
+        <span className="text-sm font-bold text-white">{isError ? '!' : 'P'}</span>
       </div>
       <div className="flex-1 space-y-1 min-w-0 max-w-[75%]">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-text-primary">{engineLabel}</span>
+        <div className="flex items-center gap-2">
+          <span className={clsx("text-sm font-medium", isError ? "text-danger" : "text-text-primary")}>{isError ? '错误' : engineLabel}</span>
           <span className="text-xs text-text-tertiary">
             {new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </span>
+          {!message.isStreaming && (
+            <MessageActions
+              messageId={message.id}
+              text={message.blocks
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { content: string }).content)
+                .join('')}
+              isAssistant
+            />
+          )}
         </div>
         {hasBlocks ? (
-          <div className="space-y-1">
+          <div className={clsx("space-y-1", isError && "rounded-xl border border-danger/30 bg-danger-faint px-3 py-2 text-danger")}>
             {message.blocks.map((block, index) => (
               <div key={index}>
                 {renderContentBlock(block, message.isStreaming)}
@@ -981,22 +1063,17 @@ const AssistantBubble = memo(function AssistantBubble({
   if (prevProps.message.id !== nextProps.message.id) return false;
   if (prevProps.message.isStreaming !== nextProps.message.isStreaming) return false;
   if (prevBlocks.length !== nextBlocks.length) return false;
-  if (nextProps.message.isStreaming && prevBlocks.length > 0) {
-    const lastPrev = prevBlocks[prevBlocks.length - 1];
-    const lastNext = nextBlocks[nextBlocks.length - 1];
-    if (lastPrev.type === 'text' && lastNext.type === 'text') {
-      if (lastPrev.content.length !== lastNext.content.length) return false;
-    } else if (lastPrev.type !== lastNext.type) {
-      return false;
+  // 逐块比较，确保工具块状态/输出变化都能触发重渲染
+  for (let i = 0; i < prevBlocks.length; i++) {
+    const pb = prevBlocks[i];
+    const nb = nextBlocks[i];
+    if (pb.type !== nb.type) return false;
+    if (pb.type === 'text' && nb.type === 'text') {
+      if (pb.content.length !== nb.content.length) return false;
     }
-    for (let i = 0; i < prevBlocks.length; i++) {
-      const pb = prevBlocks[i];
-      const nb = nextBlocks[i];
-      if (pb.type !== nb.type) return false;
-      if (pb.type === 'tool_call' && nb.type === 'tool_call') {
-        if (pb.status !== nb.status) return false;
-        if (pb.output !== nb.output) return false;
-      }
+    if (pb.type === 'tool_call' && nb.type === 'tool_call') {
+      if (pb.status !== nb.status) return false;
+      if ((pb.output?.length ?? 0) !== (nb.output?.length ?? 0)) return false;
     }
   }
   return true;
@@ -1085,9 +1162,28 @@ const EmptyState = memo(function EmptyState() {
  * - 避免 50ms 一次的整个消息列表重渲染
  */
 export function EnhancedChatMessages() {
-  const { messages, archivedMessages, loadArchivedMessages, currentMessage, isStreaming } = useEventChatStore();
+  // 精准订阅各子 store，避免无关状态变化触发整组件重渲染
+  const messages = useChatMessageStore((s) => s.messages);
+  const archivedMessages = useChatMessageStore((s) => s.archivedMessages);
+  const loadArchivedMessages = useChatMessageStore((s) => s.loadArchivedMessages);
+  const currentMessage = useChatMessageStore((s) => s.currentMessage);
+  const progressMessage = useChatMessageStore((s) => s.progressMessage);
+  const inputTokens = useChatMessageStore((s) => s.inputTokens);
+  const outputTokens = useChatMessageStore((s) => s.outputTokens);
+  const isStreaming = useChatSessionStore((s) => s.isStreaming);
   const currentEngineId = useConfigStore((state) => state.config?.defaultEngine);
   const currentEngineLabel = useMemo(() => getEngineLabel(currentEngineId), [currentEngineId]);
+  // MessageActions 仍需 getState() 直接调用，保持不变（无订阅开销）
+
+  // 搜索状态
+  const [showSearch, setShowSearch] = useState(false);
+
+  // 监听全局 Ctrl+F 事件
+  useEffect(() => {
+    const handleOpenSearch = () => setShowSearch(true);
+    window.addEventListener('chat:open-search', handleOpenSearch);
+    return () => window.removeEventListener('chat:open-search', handleOpenSearch);
+  }, []);
 
   // 性能优化：流式阶段合并 currentMessage 到消息列表
   // 这样就不需要频繁更新 messages 数组，避免整个列表重渲染
@@ -1095,7 +1191,7 @@ export function EnhancedChatMessages() {
   const prevDisplayMessagesRef = useRef<ChatMessage[]>([]);
   // 存储 lastContentRef 用于快速比较内容是否变化
   const lastContentRef = useRef<{ id: string; contentLen: number } | null>(null);
-  
+
   const displayMessages = useMemo(() => {
     if (!currentMessage || !isStreaming) {
       prevDisplayMessagesRef.current = messages;
@@ -1103,26 +1199,31 @@ export function EnhancedChatMessages() {
       return messages;
     }
 
-    // 快速检查：如果 currentMessage 内容长度与上次相同，直接返回缓存
-    const lastBlock = currentMessage.blocks[currentMessage.blocks.length - 1];
-    const currentContentLen = lastBlock?.type === 'text' ? (lastBlock as any).content?.length || 0 : 0;
-    
+    // 快速检查：用块数量+最后文本长度+所有工具块状态作为变化指纹
+    const blocks = currentMessage.blocks;
+    const lastBlock = blocks[blocks.length - 1];
+    const lastTextLen = lastBlock?.type === 'text' ? (lastBlock as any).content?.length || 0 : 0;
+    // 将工具块状态编码进 key，确保状态变化能触发重渲染
+    const toolStateKey = blocks
+      .filter(b => b.type === 'tool_call')
+      .map(b => `${(b as ToolCallBlock).id}:${(b as ToolCallBlock).status}:${(b as ToolCallBlock).output?.length ?? 0}`)
+      .join('|');
+    const fingerprint = `${blocks.length}:${lastTextLen}:${toolStateKey}`;
+
     if (
       lastContentRef.current?.id === currentMessage.id &&
-      lastContentRef.current?.contentLen === currentContentLen
+      (lastContentRef.current as any).fingerprint === fingerprint
     ) {
-      // 内容长度相同，直接返回缓存（避免创建新数组）
       return prevDisplayMessagesRef.current;
     }
 
     // 更新缓存标记
-    lastContentRef.current = { id: currentMessage.id, contentLen: currentContentLen };
+    (lastContentRef.current as any) = { id: currentMessage.id, contentLen: lastTextLen, fingerprint };
 
     // 检查 currentMessage 是否已在 messages 中
     const existingIndex = messages.findIndex(m => m.id === currentMessage.id);
-    
+
     if (existingIndex >= 0) {
-      // 内容变化，创建新的消息数组，但复用不变的消息对象
       const updated: ChatMessage[] = [
         ...messages.slice(0, existingIndex),
         {
@@ -1135,7 +1236,6 @@ export function EnhancedChatMessages() {
       prevDisplayMessagesRef.current = updated;
       return updated;
     } else {
-      // 添加到末尾
       const newMessages: ChatMessage[] = [...messages, {
         id: currentMessage.id,
         type: 'assistant' as const,
@@ -1147,6 +1247,20 @@ export function EnhancedChatMessages() {
       return newMessages;
     }
   }, [messages, currentMessage, isStreaming]);
+
+  // 搜索文本：提取每条消息的纯文本
+  const searchTexts = useMemo(() => {
+    return displayMessages.map((msg) => {
+      if (msg.type === 'user') return (msg as UserChatMessage).content;
+      if (msg.type === 'assistant') {
+        return (msg as AssistantChatMessage).blocks
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as { content: string }).content)
+          .join('');
+      }
+      return '';
+    });
+  }, [displayMessages]);
 
   const isEmpty = displayMessages.length === 0;
   const hasArchive = archivedMessages.length > 0;
@@ -1242,6 +1356,31 @@ export function EnhancedChatMessages() {
         </div>
       )}
 
+      {/* Token 统计 */}
+      {!isEmpty && (inputTokens > 0 || outputTokens > 0) && (
+        <div className="flex justify-center py-2 bg-background-surface border-b border-border-subtle">
+          <div className="flex items-center gap-4 text-xs text-text-tertiary">
+            <div className="flex items-center gap-1.5">
+              <span className="text-text-muted">输入:</span>
+              <span className="font-mono text-text-secondary">{inputTokens.toLocaleString()}</span>
+              <span className="text-text-muted">tokens</span>
+            </div>
+            <div className="w-px h-3 bg-border" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-text-muted">输出:</span>
+              <span className="font-mono text-text-secondary">{outputTokens.toLocaleString()}</span>
+              <span className="text-text-muted">tokens</span>
+            </div>
+            <div className="w-px h-3 bg-border" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-text-muted">总计:</span>
+              <span className="font-mono text-primary">{(inputTokens + outputTokens).toLocaleString()}</span>
+              <span className="text-text-muted">tokens</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 消息列表 */}
       <div className="flex-1 min-h-0 relative">
         <div className="h-full">
@@ -1255,7 +1394,21 @@ export function EnhancedChatMessages() {
               itemContent={(_index, item) => renderChatMessage(item, currentEngineLabel)}
               components={{
                 EmptyPlaceholder: () => null,
-                Footer: () => <div style={{ height: '120px' }} />,
+                Footer: () => (
+                  <div>
+                    {isStreaming && (
+                      <div className="flex items-center gap-2 px-4 py-3 mb-2">
+                        <div className="flex gap-1">
+                          <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                        <span className="text-xs text-text-tertiary">{progressMessage || '生成中'}</span>
+                      </div>
+                    )}
+                    <div style={{ height: '120px' }} />
+                  </div>
+                ),
               }}
               followOutput={autoScroll ? (isStreaming ? true : 'smooth') : false}
               atBottomStateChange={handleAtBottomStateChange}
@@ -1274,6 +1427,17 @@ export function EnhancedChatMessages() {
             currentRoundIndex={currentRoundIndex}
             onScrollToBottom={scrollToBottom}
             onScrollToRound={scrollToRound}
+          />
+        )}
+
+        {/* 搜索浮层 */}
+        {showSearch && (
+          <ChatSearch
+            texts={searchTexts}
+            onNavigate={(idx) => {
+              virtuosoRef.current?.scrollToIndex({ index: idx, align: 'center', behavior: 'smooth' });
+            }}
+            onClose={() => setShowSearch(false)}
           />
         )}
       </div>

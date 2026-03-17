@@ -4,6 +4,14 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { ChatMessage } from '../types';
+
+/** Tab 数据 */
+export interface ChatTab {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+}
 
 /** 视图状态 */
 interface ViewState {
@@ -11,12 +19,14 @@ interface ViewState {
   showEditor: boolean;
   showToolPanel: boolean;
   showDeveloperPanel: boolean;
-  showSessionHistory: boolean; // 会话历史面板
-  sidebarWidth: number;      // 侧边栏宽度（像素）
-  editorWidth: number;       // 编辑器宽度百分比（0-100）
-  toolPanelWidth: number;    // 工具面板宽度（像素）
-  developerPanelWidth: number; // Developer 面板宽度（像素）
-  theme: 'dark' | 'light';   // 主题
+  showSessionHistory: boolean;
+  sidebarWidth: number;
+  editorWidth: number;
+  toolPanelWidth: number;
+  developerPanelWidth: number;
+  theme: 'dark' | 'light';
+  tabs: ChatTab[];
+  activeTabId: string;
 }
 
 /** 视图操作 */
@@ -34,6 +44,12 @@ interface ViewActions {
   setEditorWidth: (width: number) => void;
   setToolPanelWidth: (width: number) => void;
   setDeveloperPanelWidth: (width: number) => void;
+  // Tab 操作
+  addTab: () => string;
+  closeTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
+  updateTabMessages: (id: string, messages: ChatMessage[]) => void;
+  updateTabTitle: (id: string, title: string) => void;
 }
 
 /** 完整的 View Store 类型 */
@@ -46,13 +62,15 @@ export const useViewStore = create<ViewStore>()(
       showSidebar: true,
       showEditor: false,
       showToolPanel: true,
-      showDeveloperPanel: false,  // 默认关闭 Developer 面板
-      showSessionHistory: false,  // 默认关闭会话历史面板
+      showDeveloperPanel: false,
+      showSessionHistory: false,
       sidebarWidth: 240,
       editorWidth: 50,
       toolPanelWidth: 320,
       developerPanelWidth: 400,
       theme: 'dark' as const,
+      tabs: [{ id: 'tab-1', title: '新对话', messages: [] }],
+      activeTabId: 'tab-1',
 
       // 切换侧边栏
       toggleSidebar: () => set((state) => ({ showSidebar: !state.showSidebar })),
@@ -106,6 +124,44 @@ export const useViewStore = create<ViewStore>()(
 
       // 设置 Developer 面板宽度
       setDeveloperPanelWidth: (width: number) => set({ developerPanelWidth: width }),
+
+      // Tab 操作
+      addTab: () => {
+        const id = `tab-${Date.now()}`;
+        set((state) => ({
+          tabs: [...state.tabs, { id, title: `新对话 ${state.tabs.length + 1}`, messages: [] }],
+          activeTabId: id,
+        }));
+        return id;
+      },
+
+      closeTab: (id) => {
+        set((state) => {
+          if (state.tabs.length <= 1) {
+            // 只剩一个 Tab 时，清空消息而不关闭
+            return { tabs: [{ ...state.tabs[0], messages: [] }] };
+          }
+          const newTabs = state.tabs.filter((t) => t.id !== id);
+          const newActiveId = state.activeTabId === id
+            ? newTabs[Math.max(0, state.tabs.findIndex((t) => t.id === id) - 1)].id
+            : state.activeTabId;
+          return { tabs: newTabs, activeTabId: newActiveId };
+        });
+      },
+
+      setActiveTab: (id) => set({ activeTabId: id }),
+
+      updateTabMessages: (id, messages) => {
+        set((state) => ({
+          tabs: state.tabs.map((t) => t.id === id ? { ...t, messages } : t),
+        }));
+      },
+
+      updateTabTitle: (id, title) => {
+        set((state) => ({
+          tabs: state.tabs.map((t) => t.id === id ? { ...t, title } : t),
+        }));
+      },
     }),
     {
       name: 'view-store',

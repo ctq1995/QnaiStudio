@@ -111,6 +111,8 @@ function App() {
         return config.codexCli;
       case 'gemini':
         return config.gemini;
+      case 'custom-cli':
+        return config.customCli;
       case 'claude-code':
       default:
         return config.claudeCode;

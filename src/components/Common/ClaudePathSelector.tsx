@@ -67,7 +67,7 @@ async function validatePath(engineType: EngineType, path: string) {
     case 'gemini':
       return tauri.validateGeminiPath(path);
     case 'custom-cli':
-      return Promise.resolve({ valid: true, error: null, version: null });
+      return Promise.resolve({ valid: false, error: 'Custom CLI 仅提供编译兼容，不支持路径校验。', version: null });
     case 'claude-code':
     default:
       return tauri.validateClaudePath(path);
@@ -84,6 +84,7 @@ export function ClaudePathSelector({
   placeholder,
 }: ClaudePathSelectorProps) {
   const config = ENGINE_CONFIG[engineType];
+  const isCustomCli = engineType === 'custom-cli';
   const [mode, setMode] = useState<InputMode>('manual');
   const [detectedPaths, setDetectedPaths] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
@@ -138,28 +139,30 @@ export function ClaudePathSelector({
 
   return (
     <div className="space-y-3">
-      <div className="inline-flex rounded-xl border border-border bg-background p-1">
-        <button
-          type="button"
-          onClick={() => setMode('manual')}
-          disabled={disabled}
-          className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
-            mode === 'manual' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
-        >
-          手动输入
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode('auto')}
-          disabled={disabled}
-          className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
-            mode === 'auto' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
-        >
-          自动检测
-        </button>
-      </div>
+      {!isCustomCli && (
+        <div className="inline-flex rounded-xl border border-border bg-background p-1">
+          <button
+            type="button"
+            onClick={() => setMode('manual')}
+            disabled={disabled}
+            className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
+              mode === 'manual' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
+            } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            手动输入
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('auto')}
+            disabled={disabled}
+            className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
+              mode === 'auto' ? 'bg-primary text-white' : 'text-text-secondary hover:text-text-primary'
+            } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            自动检测
+          </button>
+        </div>
+      )}
 
       {mode === 'auto' && (
         <div className="space-y-2">
@@ -238,8 +241,8 @@ export function ClaudePathSelector({
           </div>
 
           {validationError && <p className="text-xs text-danger">{validationError}</p>}
-          {isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
-          {!compact && <p className="text-xs text-text-tertiary">{config.example}</p>}
+          {!isCustomCli && isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
+          {!compact && <p className="text-xs text-text-tertiary">{isCustomCli ? 'Custom CLI 仅提供编译兼容展示，不支持自动检测或成功校验。' : config.example}</p>}
         </div>
       )}
 

@@ -78,13 +78,17 @@ export function ConnectingOverlay() {
   const isAvailable = healthStatus ? getEngineAvailability(healthStatus, currentEngine) : false;
   const isConnecting = connectionState === 'connecting';
   const isFailed = connectionState === 'failed';
+  const isCustomCli = currentEngine === 'custom-cli';
 
   const handleRetry = async () => {
+    if (isCustomCli) {
+      return;
+    }
     await retryConnection();
   };
 
   const handlePathSubmit = async () => {
-    if (!tempPath.trim()) {
+    if (isCustomCli || !tempPath.trim()) {
       return;
     }
 
@@ -150,7 +154,14 @@ export function ConnectingOverlay() {
 
           {isFailed && (
             <div className="mt-5 w-full space-y-3">
-              {!showPathInput ? (
+              {isCustomCli ? (
+                <div className="rounded-2xl border border-border bg-background-surface p-4 text-left">
+                  <p className="text-sm text-text-secondary">Custom CLI 仅提供界面兼容展示，不支持在此处执行重试或路径设置。</p>
+                  {currentCliPath && (
+                    <code className="mt-3 block break-all text-xs text-text-primary">{currentCliPath}</code>
+                  )}
+                </div>
+              ) : !showPathInput ? (
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Button onClick={handleRetry} variant="primary" className="w-full">
                     重新检测

@@ -143,10 +143,13 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
   }, [currentWorkspace?.path, loadHistory]);
 
   const handleRestore = async (sessionId: string, engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli') => {
+    if (engineId === 'custom-cli') {
+      return;
+    }
+
     setRestoring(sessionId);
     try {
-      const restoreEngineId = engineId === 'custom-cli' ? 'claude-code' : engineId;
-      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, restoreEngineId);
+      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, engineId);
       if (success) {
         onClose?.();
         return;
@@ -265,6 +268,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
               const EngineIcon = engineInfo.icon;
               const isRestoring = restoring === item.id;
               const canDelete = item.source === 'local';
+              const canRestore = item.engineId !== 'custom-cli';
               const totalTokens = (item.inputTokens || 0) + (item.outputTokens || 0);
 
               return (
@@ -297,14 +301,14 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
                     <button
                       type="button"
                       onClick={() => handleRestore(item.id, item.engineId)}
-                      disabled={isRestoring}
+                      disabled={!canRestore || isRestoring}
                       className={[
                         'rounded-md p-1.5 transition-colors',
-                        isRestoring
+                        !canRestore || isRestoring
                           ? 'cursor-not-allowed opacity-50'
                           : 'text-text-secondary hover:bg-background-elevated hover:text-text-primary',
                       ].join(' ')}
-                      title="恢复会话"
+                      title={canRestore ? '恢复会话' : 'Custom CLI 历史仅展示，不支持恢复'}
                     >
                       {isRestoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                     </button>

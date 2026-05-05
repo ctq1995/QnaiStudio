@@ -5,7 +5,6 @@ use tauri::{State, Window};
 
 mod claude;
 mod codex;
-mod custom_cli;
 mod gemini;
 mod history;
 mod iflow;
@@ -97,7 +96,9 @@ pub async fn start_chat(
         EngineId::CodexCli => codex::start_codex_chat(&ctx, &args).await,
         EngineId::IFlow => iflow::start_iflow_chat(&ctx, &args).await,
         EngineId::Gemini => gemini::start_gemini_chat(&ctx, &args).await,
-        EngineId::CustomCli => custom_cli::start_custom_cli_chat(&ctx, &args).await,
+        EngineId::CustomCli => Err(AppError::ConfigError(
+            "custom-cli 尚未接入聊天流程".to_string(),
+        )),
     }
 }
 
@@ -121,7 +122,9 @@ pub async fn continue_chat(
         EngineId::CodexCli => codex::continue_codex_chat(&ctx, &args).await,
         EngineId::IFlow => iflow::continue_iflow_chat(&ctx, &args).await,
         EngineId::Gemini => gemini::continue_gemini_chat(&ctx, &args).await,
-        EngineId::CustomCli => custom_cli::continue_custom_cli_chat(&ctx, &args).await,
+        EngineId::CustomCli => Err(AppError::ConfigError(
+            "custom-cli 尚未接入聊天流程".to_string(),
+        )),
     }
 }
 

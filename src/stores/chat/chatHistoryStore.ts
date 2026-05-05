@@ -28,6 +28,8 @@ interface HistoryEntry {
   timestamp: string
   messageCount: number
   engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+  workspaceId?: string | null
+  workspacePath?: string | null
   data: {
     messages: ChatMessage[]
     archivedMessages: ChatMessage[]
@@ -42,6 +44,8 @@ export interface UnifiedHistoryItem {
   messageCount: number
   engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
   source: 'local' | 'iflow' | 'claude-code-native'
+  workspaceId?: string | null
+  workspacePath?: string | null
   fileSize?: number
   inputTokens?: number
   outputTokens?: number
@@ -128,6 +132,8 @@ export const useChatHistoryStore = create<ChatHistoryState>((set, get) => ({
 
       const config = useConfigStore.getState().config
       const engineId: EngineId = config?.defaultEngine || 'claude-code'
+      const workspaceStore = useWorkspaceStore.getState()
+      const currentWorkspace = workspaceStore.getCurrentWorkspace()
 
       const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
       const history = historyJson ? JSON.parse(historyJson) : []
@@ -144,6 +150,8 @@ export const useChatHistoryStore = create<ChatHistoryState>((set, get) => ({
         timestamp: new Date().toISOString(),
         messageCount: msgState.messages.length,
         engineId,
+        workspaceId: currentWorkspace?.id ?? null,
+        workspacePath: currentWorkspace?.path ?? null,
         data: {
           messages: msgState.messages,
           archivedMessages: msgState.archivedMessages,
@@ -172,6 +180,10 @@ export const useChatHistoryStore = create<ChatHistoryState>((set, get) => ({
       const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
       const localHistory: HistoryEntry[] = historyJson ? JSON.parse(historyJson) : []
       for (const h of localHistory) {
+        if (currentWorkspace?.path && h.workspacePath && h.workspacePath !== currentWorkspace.path) {
+          continue
+        }
+
         items.push({
           id: h.id,
           title: h.title,
@@ -179,6 +191,8 @@ export const useChatHistoryStore = create<ChatHistoryState>((set, get) => ({
           messageCount: h.messageCount,
           engineId: h.engineId || 'claude-code',
           source: 'local',
+          workspaceId: h.workspaceId ?? null,
+          workspacePath: h.workspacePath ?? null,
         })
       }
 
@@ -242,9 +256,15 @@ export const useChatHistoryStore = create<ChatHistoryState>((set, get) => ({
       // 1. 先尝试从 localStorage 恢复
       const historyJson = localStorage.getItem(SESSION_HISTORY_KEY)
       const localHistory = historyJson ? JSON.parse(historyJson) : []
+      const workspaceStore = useWorkspaceStore.getState()
+      const currentWorkspace = workspaceStore.getCurrentWorkspace()
       const localSession = localHistory.find((h: HistoryEntry) => h.id === sessionId)
 
       if (localSession) {
+        if (currentWorkspace?.path && localSession.workspacePath && localSession.workspacePath !== currentWorkspace.path) {
+          console.warn('[ChatHistoryStore] 历史会话不属于当前工作区，拒绝恢复:', sessionId)
+          return false
+        }
         useChatMessageStore.setState({
           messages: localSession.data.messages || [],
           archivedMessages: localSession.data.archivedMessages || [],

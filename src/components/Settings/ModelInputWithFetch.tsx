@@ -1,5 +1,7 @@
 import { Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { fetchModels } from '../../services/modelService';
 
 interface ModelInputWithFetchProps {
@@ -90,37 +92,36 @@ export function ModelInputWithFetch({
   return (
     <div>
       <div className="flex items-center gap-2">
-        <input
+        <Input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           list={datalistId}
           placeholder={placeholder}
-          className={`w-full rounded-xl border bg-background px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50 ${
-            dirty ? 'border-primary' : 'border-border'
-          }`}
+          className={dirty ? 'border-primary' : ''}
         />
 
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="default"
           onClick={handleFetch}
           disabled={disabled || isFetching}
-          className="inline-flex h-[38px] shrink-0 items-center gap-2 rounded-xl border border-border bg-background px-3 text-sm text-text-primary transition-colors hover:bg-background-hover disabled:opacity-50"
           title={tooltip}
+          className="shrink-0"
         >
           {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '获取'}
-        </button>
+        </Button>
       </div>
 
       {modelOptions.length > 0 && (
-        <div className="mt-1 text-xs text-text-tertiary">
+        <div className="mt-1.5 text-xs text-text-muted">
           已获取 {modelOptions.length} 个模型，可在输入框中下拉选择。
         </div>
       )}
 
       {error && (
-        <div className="mt-2 rounded-xl border border-danger/30 bg-danger-faint px-3 py-2 text-xs text-danger">
+        <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
           <pre className="whitespace-pre-wrap break-words font-mono">{error}</pre>
         </div>
       )}

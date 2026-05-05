@@ -1,8 +1,9 @@
 use super::{ChatContext, ContinueChatArgs, StartChatArgs};
 use crate::commands::chat::utils::{
-    emit_chat_event, emit_stream_event, extract_session_id, terminate_process, update_session_mapping,
+    emit_chat_event, emit_stream_event, extract_session_id, register_session_runtime,
+    remove_session_runtime, resolve_session_pid, terminate_process, update_session_mapping,
 };
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use crate::services::iflow_service::{IFlowService, IFlowSession};
 use crate::utils::encoding::decode_cli_line;
 use serde_json::json;
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use crate::SessionRuntime;
 
 const START_LINE_BEGIN: usize = 0;
 
@@ -18,7 +20,7 @@ pub async fn start_iflow_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Re
     let temp_session_id = args.session_id.clone().unwrap_or_else(|| session.id.clone());
     session.id = temp_session_id.clone();
     let pid = session.child.id();
-    store_session_pid(&ctx.state.sessions, &temp_session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &temp_session_id, pid);
     spawn_iflow_start_thread(IflowStartThreadArgs {
         session,
         window: ctx.window.clone(),
@@ -32,7 +34,7 @@ pub async fn continue_iflow_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
     terminate_existing_session(&ctx.state.sessions, &args.session_id);
     let child = IFlowService::continue_chat(&ctx.config, &args.session_id, &args.message)?;
     let pid = child.id();
-    store_session_pid(&ctx.state.sessions, &args.session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
     spawn_iflow_continue_thread(IflowContinueThreadArgs {
         child,
         session_id: args.session_id.clone(),
@@ -46,7 +48,7 @@ pub async fn continue_iflow_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
 struct IflowStartThreadArgs {
     session: IFlowSession,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
     config: crate::models::config::Config,
 }
 
@@ -54,7 +56,7 @@ struct IflowContinueThreadArgs {
     child: std::process::Child,
     session_id: String,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
     config: crate::models::config::Config,
 }
 
@@ -84,7 +86,7 @@ fn spawn_iflow_continue_thread(mut args: IflowContinueThreadArgs) {
 struct IflowStartState {
     session: IFlowSession,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
     config: crate::models::config::Config,
     resolved_session_id: Option<String>,
 }
@@ -163,7 +165,7 @@ struct JsonlMonitorArgs {
     jsonl_path: PathBuf,
     session_id: String,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
     start_line: usize,
 }
 
@@ -174,8 +176,8 @@ fn start_jsonl_monitor(args: JsonlMonitorArgs) {
         session_id.clone(),
         move |event| {
             emit_stream_event(&window, &event, &session_id);
-            if matches!(event, crate::models::events::StreamEvent::SessionEnd) {
-                remove_session(&sessions, &session_id);
+            if matches!(event, crate::models::events::StreamEvent::SessionEnd { .. }) {
+                let _ = remove_session_runtime(&sessions, &session_id);
             }
         },
         start_line,
@@ -192,25 +194,12 @@ fn resolve_start_line(config: &crate::models::config::Config, session_id: &str) 
     IFlowService::get_jsonl_line_count(&jsonl_path).unwrap_or(START_LINE_BEGIN)
 }
 
-fn store_session_pid(
-    sessions: &Arc<Mutex<HashMap<String, u32>>>,
+fn terminate_existing_session(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
     session_id: &str,
-    pid: u32,
-) -> Result<()> {
-    let mut sessions = sessions.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    sessions.insert(session_id.to_string(), pid);
-    Ok(())
-}
-
-fn remove_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    if let Ok(mut sessions) = sessions.lock() {
-        sessions.remove(session_id);
-    }
-}
-
-fn terminate_existing_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    let pid_opt = sessions.lock().ok().and_then(|mut sessions| sessions.remove(session_id));
+) {
+    let pid_opt = resolve_session_pid(sessions, session_id);
+    let _ = remove_session_runtime(sessions, session_id);
     if let Some(pid) = pid_opt {
         terminate_process(pid);
     }

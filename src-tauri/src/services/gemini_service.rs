@@ -93,13 +93,28 @@ impl GeminiService {
 
     fn build_chat_command(gemini_cmd: &str, message: &str, config: &Config) -> Command {
         let mut command = Command::new(gemini_cmd);
-        // Gemini CLI 使用 --prompt 标志并输出 JSON 流
-        command
-            .arg("--prompt")
-            .arg(message)
-            .arg("--output_format")
-            .arg("json")
-            .arg("--yolo");
+        command.arg("--prompt").arg(message).arg("--output_format").arg("json");
+
+        // Advanced params
+        let adv = config.gemini.advanced.as_ref();
+
+        // approval-mode takes precedence over legacy --yolo flag when set
+        if let Some(approval_mode) = adv.and_then(|a| a.approval_mode.as_ref()) {
+            command.arg("--approval-mode").arg(approval_mode.as_str());
+        } else {
+            // Fallback to legacy yolo flag
+            let yolo = adv.and_then(|a| a.yolo).unwrap_or(true);
+            if yolo {
+                command.arg("--yolo");
+            }
+        }
+
+        if let Some(sandbox) = adv.and_then(|a| a.sandbox) {
+            if sandbox {
+                command.arg("--sandbox");
+            }
+        }
+
         if let Some(ref model) = config.gemini.model {
             if !model.is_empty() {
                 command.arg("--model").arg(model);
@@ -116,25 +131,21 @@ impl GeminiService {
         }
 
         eprintln!("[GeminiService] gemini config: api_key={:?}, base_url={:?}, model={:?}",
-            config.gemini.api_key.as_deref().map(|k| if k.len() > 8 { &k[..8] } else { k }),
-            config.gemini.base_url,
+            config.resolve_gemini_api_key().map(|k| if k.len() > 8 { &k[..8] } else { k }),
+            config.resolve_gemini_base_url(),
             config.gemini.model,
         );
-        if let Some(ref api_key) = config.gemini.api_key {
-            if !api_key.is_empty() {
-                command.env_remove("GEMINI_API_KEY");
-                command.env_remove("GOOGLE_API_KEY");
-                command.env("GEMINI_API_KEY", api_key);
-                command.env("GOOGLE_API_KEY", api_key);
-            }
+        if let Some(api_key) = config.resolve_gemini_api_key() {
+            command.env_remove("GEMINI_API_KEY");
+            command.env_remove("GOOGLE_API_KEY");
+            command.env("GEMINI_API_KEY", api_key);
+            command.env("GOOGLE_API_KEY", api_key);
         }
-        if let Some(ref base_url) = config.gemini.base_url {
-            if !base_url.is_empty() {
-                command.env_remove("GEMINI_API_BASE_URL");
-                command.env_remove("GEMINI_BASE_URL");
-                command.env("GEMINI_API_BASE_URL", base_url);
-                command.env("GEMINI_BASE_URL", base_url);
-            }
+        if let Some(base_url) = config.resolve_gemini_base_url() {
+            command.env_remove("GEMINI_API_BASE_URL");
+            command.env_remove("GEMINI_BASE_URL");
+            command.env("GEMINI_API_BASE_URL", base_url);
+            command.env("GEMINI_BASE_URL", base_url);
         }
         if let Some(ref model) = config.gemini.model {
             if !model.is_empty() {

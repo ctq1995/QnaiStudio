@@ -133,6 +133,15 @@ export async function interruptChat(sessionId: string): Promise<void> {
   return invoke('interrupt_chat', { payload: { sessionId } });
 }
 
+/**
+ * 响应权限请求
+ * 当前后端统一将 approved 映射为 y/n。
+ * 如后续不同引擎需要不同协议，可在这里按 engineId 扩展映射，再把 responseText 一并传给后端。
+ */
+export async function respondPermission(sessionId: string, approved: boolean): Promise<void> {
+  return invoke('respond_permission', { payload: { sessionId, approved } });
+}
+
 // ============================================================================
 // 事件监听
 // ============================================================================

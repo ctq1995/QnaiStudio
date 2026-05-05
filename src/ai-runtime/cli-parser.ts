@@ -5,7 +5,7 @@
  * 支持流式解析，可以处理不完整的 JSON 行。
  */
 
-import type { AIEvent } from '../ai-runtime'
+import type { AIEvent, PermissionDenialInfo } from '../ai-runtime'
 import {
   createTokenEvent,
   createToolCallStartEvent,
@@ -16,6 +16,7 @@ import {
   createSessionStartEvent,
   createSessionEndEvent,
   createAssistantMessageEvent,
+  createPermissionRequestEvent,
   type ToolCallInfo,
 } from '../ai-runtime'
 
@@ -339,8 +340,21 @@ export class CLIParser {
   /**
    * 解析 Permission Request 事件
    */
-  private parsePermissionRequestEvent(_event: Record<string, unknown>): AIEvent {
-    return createProgressEvent('等待权限确认...')
+  private parsePermissionRequestEvent(event: Record<string, unknown>): AIEvent {
+    const sessionId = (event.sessionId as string) || (event.session_id as string) || this.state.sessionId || 'unknown'
+    const rawDenials = (event.denials as unknown[]) || []
+    const denials: PermissionDenialInfo[] = rawDenials.map((d: unknown) => {
+      const obj = (typeof d === 'object' && d !== null) ? d as Record<string, unknown> : {}
+      return {
+        toolName: (obj.toolName as string) || (obj.tool_name as string) || 'unknown',
+        reason: (obj.reason as string) || '',
+        details: obj,
+      }
+    })
+    const summary = denials.length > 0
+      ? `请求权限：${denials.map((item) => item.toolName).join('、')}`
+      : '请求执行受限操作'
+    return createPermissionRequestEvent(sessionId, denials, undefined, summary, '通常可用 y / n 进行确认')
   }
 
   /**
@@ -348,7 +362,7 @@ export class CLIParser {
    */
   private parseErrorEvent(event: Record<string, unknown>): AIEvent {
     const error = (event.error as string) || '未知错误'
-    return createErrorEvent(error)
+    return this.createErrorLikeEvent(error)
   }
 
   /**
@@ -369,6 +383,15 @@ export class CLIParser {
     return createSessionStartEvent(sessionId)
   }
 
+  private createErrorLikeEvent(text: string): AIEvent {
+    const normalized = text.trim()
+    const reconnectMatch = normalized.match(/^Reconnecting\.\.\.\s*(\d+\/\d+)/i)
+    if (reconnectMatch) {
+      return createProgressEvent(`连接中断，正在重连 ${reconnectMatch[1]}`)
+    }
+    return createErrorEvent(normalized)
+  }
+
   /**
    * 解析纯文本输出（非 JSON）
    */
@@ -382,8 +405,8 @@ export class CLIParser {
         results.push(createProgressEvent(`调用工具: ${match[1]}`))
         results.push(createToolCallStartEvent(match[1], {}))
       }
-    } else if (text.includes('Error:')) {
-      results.push(createErrorEvent(text))
+    } else if (text.includes('Error:') || /^Reconnecting\.\.\./i.test(text.trim())) {
+      results.push(this.createErrorLikeEvent(text))
     } else {
       // 默认作为 token 处理
       results.push(createTokenEvent(text))

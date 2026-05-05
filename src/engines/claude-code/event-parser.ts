@@ -5,7 +5,7 @@
  * 这是适配器的核心转换层。
  */
 
-import type { AIEvent, ToolCallInfo } from '../../ai-runtime'
+import type { AIEvent, ToolCallInfo, PermissionDenialInfo } from '../../ai-runtime'
 import {
   createToolCallStartEvent,
   createToolCallEndEvent,
@@ -14,6 +14,7 @@ import {
   createSessionEndEvent,
   createUserMessageEvent,
   createAssistantMessageEvent,
+  createPermissionRequestEvent,
 } from '../../ai-runtime'
 import {
   BaseEventParser,
@@ -175,8 +176,25 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
       }
 
       case 'permission_request': {
-        // 权限请求可以转换为进度事件
-        results.push(createProgressEvent('等待权限确认...'))
+        const permEvent = event as PermissionRequestEvent
+        const denials: PermissionDenialInfo[] = (permEvent.denials || []).map((d: unknown) => {
+          const obj = (typeof d === 'object' && d !== null) ? d as Record<string, unknown> : {}
+          return {
+            toolName: (obj.toolName as string) || (obj.tool_name as string) || 'unknown',
+            reason: (obj.reason as string) || '',
+            details: obj,
+          }
+        })
+        const summary = denials.length > 0
+          ? `请求权限：${denials.map((item) => item.toolName).join('、')}`
+          : '请求执行受限操作'
+        results.push(createPermissionRequestEvent(
+          (permEvent.session_id || this.sessionId) as string,
+          denials,
+          'claude-code',
+          summary,
+          'Claude Code 通常接受 y / n 作为交互响应'
+        ))
         break
       }
 
@@ -336,7 +354,12 @@ export class ClaudeEventParser extends BaseEventParser<ClaudeStreamEvent> {
    * 解析 Error 事件
    */
   private parseErrorEvent(event: ErrorEvent): AIEvent {
-    return createErrorEvent(event.error)
+    const normalizedError = event.error.trim()
+    const reconnectMatch = normalizedError.match(/^Reconnecting\.\.\.\s*(\d+\/\d+)/i)
+    if (reconnectMatch) {
+      return createProgressEvent(`连接中断，正在重连 ${reconnectMatch[1]}`)
+    }
+    return createErrorEvent(normalizedError)
   }
 
   /**

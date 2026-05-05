@@ -106,7 +106,7 @@ function streamEventToAIEvent(streamEvent: StreamEvent, sessionId: string): AIEv
 
     case 'result':
 
-      events.push({ type: 'session_end', sessionId, reason: 'completed' })
+      events.push({ type: 'session_end', sessionId, reason: streamEvent.type === 'session_end' ? (streamEvent.reason === 'aborted' ? 'aborted' : streamEvent.reason === 'completed' ? 'completed' : 'error') : 'completed' })
 
       break
 

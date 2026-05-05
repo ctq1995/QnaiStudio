@@ -9,6 +9,7 @@ export { Button } from './Button';
 export { BrandLogo } from './BrandLogo';
 export { ConnectingOverlay } from './ConnectingOverlay';
 export { ClaudePathSelector } from './ClaudePathSelector';
+export { ConfirmDialog } from './ConfirmDialog';
 export { ErrorBoundary } from './ErrorBoundary';
 export * from './Icons';
 export * from '../Workspace';

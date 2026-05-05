@@ -4,13 +4,11 @@ import { FileTree } from './FileTree';
 import { SearchBar } from './SearchBar';
 import { useInitialWorkspaceLoad, useRefreshHotkey, useWorkspaceChangeSync } from './useFileExplorerLifecycle';
 import { WorkspaceMenuContent } from '../TopMenuBar/WorkspaceMenuContent';
-import { WorkspaceVersionsModal } from '../Versioning/WorkspaceVersionsModal';
 
 interface WorkspaceSelectorProps {
   workspaceName: string;
   onCreateWorkspace: () => void;
   onRefresh: () => void;
-  onOpenVersions: () => void;
   isRefreshing: boolean;
   isDisabled: boolean;
 }
@@ -19,7 +17,6 @@ function WorkspaceSelector({
   workspaceName,
   onCreateWorkspace,
   onRefresh,
-  onOpenVersions,
   isRefreshing,
   isDisabled,
 }: WorkspaceSelectorProps) {
@@ -76,26 +73,6 @@ function WorkspaceSelector({
           <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
       </button>
-
-      {/* 版本管理 */}
-      <button
-        onClick={onOpenVersions}
-        disabled={isDisabled}
-        className={`shrink-0 p-1.5 rounded-lg transition-all duration-200 ${
-          isDisabled
-            ? 'text-text-tertiary cursor-not-allowed'
-            : 'text-text-secondary hover:text-text-primary hover:bg-background-hover'
-        }`}
-        title="版本管理"
-      >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-      </button>
     </div>
   );
 }
@@ -108,7 +85,6 @@ export function FileExplorer({ onCreateWorkspace }: FileExplorerProps) {
   const { current_path, loading, is_refreshing, error, load_directory, refresh_directory, clear_error } = useFileExplorerStore();
   const { getCurrentWorkspace, getViewingWorkspace } = useWorkspaceStore();
   const { loadCustomCommands } = useCommandStore();
-  const [showVersions, setShowVersions] = useState(false);
 
   useWorkspaceChangeSync({ getCurrentWorkspace, getViewingWorkspace, load_directory, loadCustomCommands });
   useInitialWorkspaceLoad({ currentPath: current_path, getCurrentWorkspace, getViewingWorkspace, load_directory, loadCustomCommands });
@@ -131,7 +107,6 @@ export function FileExplorer({ onCreateWorkspace }: FileExplorerProps) {
         workspaceName={activeWorkspace?.name ?? '选择工作区'}
         onCreateWorkspace={onCreateWorkspace ?? (() => {})}
         onRefresh={handleRefresh}
-        onOpenVersions={() => setShowVersions(true)}
         isRefreshing={is_refreshing}
         isDisabled={isBusy || !activeWorkspace}
       />
@@ -145,14 +120,6 @@ export function FileExplorer({ onCreateWorkspace }: FileExplorerProps) {
       <div className="flex-1 overflow-auto overflow-x-auto">
         <FileTree />
       </div>
-
-      {showVersions && activeWorkspace && (
-        <WorkspaceVersionsModal
-          workspaceName={activeWorkspace.name}
-          workspacePath={activeWorkspace.path}
-          onClose={() => setShowVersions(false)}
-        />
-      )}
     </div>
   );
 }

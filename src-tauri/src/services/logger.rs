@@ -1,56 +1,9 @@
 use std::path::PathBuf;
-use tracing::Level;
-use tracing_subscriber::{fmt, prelude::*};
-use tracing_appender::{non_blocking, rolling};
 
 /// 日志服务
-pub struct Logger {
-    _guard: Option<non_blocking::WorkerGuard>,
-}
+pub struct Logger;
 
 impl Logger {
-    /// 初始化日志系统
-    pub fn init(enabled: bool) -> Self {
-        if !enabled {
-            // 如果禁用日志，使用默认的空订阅者
-            tracing_subscriber::registry()
-                .with(fmt::layer().with_writer(std::io::sink))
-                .init();
-            return Self { _guard: None };
-        }
-
-        // 获取日志目录
-        let log_dir = Self::log_dir();
-        std::fs::create_dir_all(&log_dir).ok();
-
-        // 创建日志文件（按天轮转）
-        let file_appender = rolling::daily(&log_dir, "app.log");
-        let (non_blocking_appender, guard) = non_blocking(file_appender);
-
-        // 配置订阅者
-        let env_filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(Level::INFO.into())
-            .from_env_lossy();
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(
-                fmt::layer()
-                    .with_writer(std::io::stdout)
-                    .with_ansi(true)
-                    .with_target(false)
-            )
-            .with(
-                fmt::layer()
-                    .with_writer(non_blocking_appender)
-                    .with_ansi(false)
-                    .with_target(true)
-            )
-            .init();
-
-        Self { _guard: Some(guard) }
-    }
-
     /// 获取日志目录
     pub fn log_dir() -> PathBuf {
         if let Some(data_dir) = dirs::data_local_dir() {

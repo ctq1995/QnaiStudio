@@ -15,7 +15,8 @@ import { useMemo, memo, useState, useCallback, useRef, useDeferredValue, useEffe
 import React from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { clsx } from 'clsx';
-import type { ChatMessage, UserChatMessage, AssistantChatMessage, ContentBlock, TextBlock, ToolCallBlock } from '../../types';
+import type { ChatMessage, UserChatMessage, AssistantChatMessage, ContentBlock, TextBlock, ToolCallBlock, PermissionBlock } from '../../types';
+import type { ChatRunStatus } from '../../stores/chat/chatEventUtils';
 import { useConfigStore } from '../../stores';
 import { useChatMessageStore } from '../../stores/chat/chatMessageStore';
 import { useChatSessionStore } from '../../stores/chat/chatSessionStore';
@@ -43,6 +44,7 @@ import { DiffViewer } from '../Diff/DiffViewer';
 import { BRAND_SHORT_NAME, BRAND_TAGLINE } from '../../constants/brand';
 import { isEditTool, extractEditDiff } from '../../utils/diffExtractor';
 import { getEngineLabel } from '../../utils/engineLabels';
+import { respondPermission } from '../../services/tauri';
 
 /** Markdown 渲染器（使用缓存优化） */
 function formatContent(content: string): string {
@@ -107,10 +109,21 @@ function MessageActions({
 
 /** 用户消息组件 */
 const UserBubble = memo(function UserBubble({ message }: { message: UserChatMessage }) {
+  const queueLabel = message.queueStatus === 'queued'
+    ? '排队中'
+    : message.queueStatus === 'running'
+      ? '队列执行中'
+      : null;
+
   return (
     <div className="group flex justify-end my-2 gap-2 items-start">
       <div className="flex flex-col items-end gap-1 max-w-[85%]">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {queueLabel ? (
+            <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[11px] text-white/90">
+              {queueLabel}
+            </span>
+          ) : null}
           <MessageActions messageId={message.id} text={message.content} />
           <span className="text-xs text-text-tertiary">
             {new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
@@ -675,7 +688,8 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
   // 是否可展开（有输入参数或有输出）
   const hasInput = block.input && Object.keys(block.input).length > 0;
   const hasOutput = block.output && block.output.length > 0;
-  const hasError = block.status === 'failed' && block.error;
+  const hasError = block.status === 'failed' && !!block.error;
+  const errorSummary = hasError ? block.error!.split('\n')[0] : null;
   const canExpand = hasInput || hasOutput || hasError;
 
   // 是否显示 Diff 按钮（Edit 工具且有 Diff 数据）
@@ -756,7 +770,17 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
                 {keyInfo}
               </span>
             )}
+            {block.status === 'failed' && (
+              <span className="inline-flex items-center rounded-full border border-error/30 bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+                执行失败
+              </span>
+            )}
           </div>
+          {!isExpanded && errorSummary && (
+            <div className="text-xs text-error mt-0.5 truncate">
+              {errorSummary}
+            </div>
+          )}
           {/* 输出摘要（折叠时显示） */}
           {!isExpanded && outputSummary && (
             <div className="text-xs text-text-tertiary mt-0.5 flex items-center gap-1">
@@ -823,6 +847,18 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
               )}
             </div>
           </div>
+
+          {hasError && (
+            <div className="mb-3 rounded-md border border-error/30 bg-error/10 p-3">
+              <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-error">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                {'执行失败'}
+              </div>
+              <pre className="text-xs text-error whitespace-pre-wrap break-words font-mono">
+                {block.error}
+              </pre>
+            </div>
+          )}
 
           {/* Edit 工具：直接显示 Diff */}
           {showDiffButton && diffData && (
@@ -980,6 +1016,308 @@ const ToolCallBlockRenderer = memo(function ToolCallBlockRenderer({ block }: { b
   );
 });
 
+type PermissionOperation = 'read' | 'write' | 'delete' | 'execute' | 'network'
+
+type PermissionInsights = {
+  files: string[]
+  commands: string[]
+  urls: string[]
+  operations: PermissionOperation[]
+  risk: 'low' | 'medium' | 'high'
+  recommendation: 'allow' | 'review' | 'deny'
+}
+
+function extractGenericPermissionInsights(rawDetails?: Record<string, unknown>[]): PermissionInsights {
+  const files = new Set<string>()
+  const commands = new Set<string>()
+  const urls = new Set<string>()
+  const operations = new Set<PermissionOperation>()
+  let risk: 'low' | 'medium' | 'high' = 'low'
+
+  const markRisk = (level: 'low' | 'medium' | 'high') => {
+    if (level === 'high' || (level === 'medium' && risk === 'low')) {
+      risk = level
+    }
+  }
+
+  const visit = (value: unknown) => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (!trimmed) return
+
+      if (/^(https?:\/\/|wss?:\/\/)/i.test(trimmed)) {
+        urls.add(trimmed)
+        operations.add('network')
+        markRisk('medium')
+      }
+      if (/[/\\]/.test(trimmed) && /\.[a-z0-9]{1,8}$/i.test(trimmed)) {
+        files.add(trimmed)
+      }
+      if (/^(git|npm|pnpm|yarn|cargo|python|node|cmd|powershell|bash|sh)\b/i.test(trimmed)) {
+        commands.add(trimmed)
+        operations.add('execute')
+        markRisk('medium')
+      }
+      if (/(read|open|view|cat|type)\b/i.test(trimmed)) {
+        operations.add('read')
+      }
+      if (/(write|edit|modify|update|create|save|patch|apply)\b/i.test(trimmed)) {
+        operations.add('write')
+        markRisk('medium')
+      }
+      if (/(delete|remove|rm\s|drop\s|truncate|unlink)\b/i.test(trimmed)) {
+        operations.add('delete')
+        markRisk('high')
+      }
+      if (/(exec|run|command|spawn|shell|powershell|bash|cmd)\b/i.test(trimmed)) {
+        operations.add('execute')
+        markRisk('medium')
+      }
+      if (/(network|fetch|request|download|upload|http|https|socket)\b/i.test(trimmed)) {
+        operations.add('network')
+        markRisk('medium')
+      }
+      if (/(danger|bypass|sudo|chmod|chown|registry|credential|secret|token)\b/i.test(trimmed)) {
+        markRisk('high')
+      }
+      return
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+    if (value && typeof value === 'object') {
+      Object.entries(value as Record<string, unknown>).forEach(([key, nested]) => {
+        visit(key)
+        visit(nested)
+      })
+    }
+  }
+
+  rawDetails?.forEach(visit)
+  const operationPriority: Record<PermissionOperation, number> = {
+    delete: 5,
+    execute: 4,
+    network: 3,
+    write: 2,
+    read: 1,
+  }
+  const sortedOperations = Array.from(operations).sort((a, b) => operationPriority[b] - operationPriority[a])
+  const recommendation: 'allow' | 'review' | 'deny' = sortedOperations.includes('delete')
+    ? 'deny'
+    : sortedOperations.some((item) => item === 'execute' || item === 'network' || item === 'write')
+      ? 'review'
+      : 'allow'
+
+  return {
+    files: Array.from(files).slice(0, 8),
+    commands: Array.from(commands).slice(0, 6),
+    urls: Array.from(urls).slice(0, 6),
+    operations: sortedOperations,
+    risk,
+    recommendation,
+  }
+}
+
+function extractClaudePermissionInsights(rawDetails?: Record<string, unknown>[]): PermissionInsights {
+  const base = extractGenericPermissionInsights(rawDetails)
+
+  rawDetails?.forEach((detail) => {
+    const toolName = typeof detail.toolName === 'string'
+      ? detail.toolName
+      : typeof detail.tool_name === 'string'
+        ? detail.tool_name
+        : null
+    const reason = typeof detail.reason === 'string' ? detail.reason : ''
+
+    if (toolName && /edit|write|replace|multi_edit/i.test(toolName)) {
+      if (!base.operations.includes('write')) base.operations.push('write')
+      if (base.risk === 'low') base.risk = 'medium'
+    }
+    if (toolName && /bash|command|exec|shell/i.test(toolName)) {
+      if (!base.operations.includes('execute')) base.operations.push('execute')
+      if (base.risk === 'low') base.risk = 'medium'
+    }
+    if (toolName && /web|fetch|http|network/i.test(toolName)) {
+      if (!base.operations.includes('network')) base.operations.push('network')
+      if (base.risk === 'low') base.risk = 'medium'
+    }
+    if (/delete|remove|danger|bypass/i.test(reason)) {
+      base.risk = 'high'
+      if (!base.operations.includes('delete')) base.operations.push('delete')
+    }
+  })
+
+  return base
+}
+
+function extractPermissionInsights(engineId?: string, rawDetails?: Record<string, unknown>[]): PermissionInsights {
+  if (engineId === 'claude-code') {
+    return extractClaudePermissionInsights(rawDetails)
+  }
+  return extractGenericPermissionInsights(rawDetails)
+}
+
+/** 权限请求卡片 */
+const PermissionCard = memo(function PermissionCard({ block }: { block: PermissionBlock }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const insights = extractPermissionInsights(block.engineId, block.rawDetails);
+
+  const handleRespond = async (approved: boolean) => {
+    if (block.status !== 'pending' || submitting) return;
+    setSubmitting(true);
+    try {
+      await respondPermission(block.sessionId, approved);
+      useChatMessageStore.getState().respondPermissionBlock(block.sessionId, approved);
+    } catch (error) {
+      console.error('[PermissionCard] respond permission failed', error);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const tone = block.status === 'approved'
+    ? 'border-emerald-500/30 bg-emerald-500/10'
+    : block.status === 'denied'
+      ? 'border-rose-500/30 bg-rose-500/10'
+      : insights.risk === 'high'
+        ? 'border-rose-500/40 bg-rose-500/10 shadow-[0_0_0_1px_rgba(244,63,94,0.1)]'
+        : insights.risk === 'medium'
+          ? 'border-amber-500/30 bg-amber-500/10'
+          : 'border-emerald-500/25 bg-emerald-500/8';
+
+  return (
+    <div className={clsx('mb-3 rounded-xl border px-4 py-3', tone)}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <AlertTriangle className="h-4 w-4 text-amber-400" />
+            权限审计面板
+            {block.requestCount && block.requestCount > 1 ? <span className="text-[11px] text-text-muted">第 {block.requestCount} 次请求</span> : null}
+          </div>
+          {block.summary ? <div className="mt-1 text-xs text-text-secondary">{block.summary}</div> : null}
+          <div className="mt-1 text-[11px] text-text-muted">
+            会话：{block.sessionId}
+            {block.engineId ? ` · 引擎：${block.engineId}` : ''}
+            {block.engineId === 'claude-code' ? ' · 解析器：Claude 专用' : block.engineId ? ' · 解析器：通用回退' : ''}
+          </div>
+        </div>
+        <span className="text-xs text-text-muted">{block.status === 'pending' ? '等待你的选择' : block.status === 'approved' ? '已批准' : '已拒绝'}</span>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {block.denials.map((item, index) => (
+          <div key={`${block.id}-${index}`} className="rounded-lg border border-border-subtle bg-background-secondary px-3 py-2">
+            <div className="text-xs font-medium text-text-primary">工具：{item.toolName}</div>
+            <div className="mt-1 text-xs text-text-secondary">原因：{item.reason || 'CLI 请求执行受限操作，需要用户确认'}</div>
+            {'details' in item && item.details && Object.keys(item.details).length > 0 ? (
+              <pre className="mt-2 overflow-x-auto rounded border border-border-subtle bg-background-primary p-2 text-[11px] text-text-muted">{JSON.stringify(item.details, null, 2)}</pre>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className={clsx('rounded-lg border px-3 py-2 text-xs text-text-secondary', insights.risk === 'high' ? 'border-rose-500/30 bg-rose-500/10' : insights.risk === 'medium' ? 'border-amber-500/30 bg-amber-500/10' : 'border-emerald-500/30 bg-emerald-500/10')}>
+          <div className="font-medium text-text-primary">风险等级</div>
+          <div className="mt-1">{insights.risk === 'high' ? '高风险' : insights.risk === 'medium' ? '中风险' : '低风险'}</div>
+        </div>
+        <div className={clsx('rounded-lg border px-3 py-2 text-xs text-text-secondary', insights.recommendation === 'deny' ? 'border-rose-500/30 bg-rose-500/10' : insights.recommendation === 'review' ? 'border-amber-500/30 bg-amber-500/10' : 'border-emerald-500/30 bg-emerald-500/10')}>
+          <div className="font-medium text-text-primary">建议动作</div>
+          <div className="mt-1">{insights.recommendation === 'deny' ? '建议拒绝' : insights.recommendation === 'review' ? '建议人工复核后决定' : '可批准'}</div>
+        </div>
+      </div>
+
+      {block.responseHint ? (
+        <div className="mt-2 rounded-lg border border-border-subtle bg-background-secondary px-3 py-2 text-xs text-text-secondary">
+          <div className="font-medium text-text-primary">交互提示</div>
+          <div className="mt-1">{block.responseHint}</div>
+        </div>
+      ) : null}
+
+      {insights.operations.length > 0 ? (
+        <div className="mt-3 rounded-lg border border-border-subtle bg-background-secondary px-3 py-2 text-xs text-text-secondary">
+          <div className="font-medium text-text-primary">操作类型</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {insights.operations.map((op) => {
+              const label = op === 'read'
+                ? '读取'
+                : op === 'write'
+                  ? '写入/修改'
+                  : op === 'delete'
+                    ? '删除'
+                    : op === 'execute'
+                      ? '执行命令'
+                      : '网络访问';
+              const tone = op === 'delete'
+                ? 'border-rose-500/30 bg-rose-500/10 text-rose-200'
+                : op === 'write' || op === 'execute' || op === 'network'
+                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100';
+              return <span key={op} className={clsx('rounded-full border px-2.5 py-1 text-[11px] font-medium', tone)}>{label}</span>;
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {insights.files.length > 0 || insights.commands.length > 0 || insights.urls.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          {insights.files.length > 0 ? (
+            <div className="rounded-lg border border-border-subtle bg-background-secondary px-3 py-2 text-xs text-text-secondary">
+              <div className="font-medium text-text-primary">目标文件</div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {insights.files.map((item) => <span key={item} className="rounded bg-background-primary px-2 py-0.5 font-mono text-[11px]">{item}</span>)}
+              </div>
+            </div>
+          ) : null}
+          {insights.commands.length > 0 ? (
+            <div className="rounded-lg border border-border-subtle bg-background-secondary px-3 py-2 text-xs text-text-secondary">
+              <div className="font-medium text-text-primary">执行命令</div>
+              <div className="mt-1 flex flex-col gap-1">
+                {insights.commands.map((item) => <code key={item} className="rounded bg-background-primary px-2 py-1 font-mono text-[11px]">{item}</code>)}
+              </div>
+            </div>
+          ) : null}
+          {insights.urls.length > 0 ? (
+            <div className="rounded-lg border border-border-subtle bg-background-secondary px-3 py-2 text-xs text-text-secondary">
+              <div className="font-medium text-text-primary">访问目标</div>
+              <div className="mt-1 flex flex-col gap-1">
+                {insights.urls.map((item) => <code key={item} className="rounded bg-background-primary px-2 py-1 font-mono text-[11px] break-all">{item}</code>)}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {block.rawDetails && block.rawDetails.length > 0 ? (
+        <div className="mt-3">
+          <button type="button" onClick={() => setShowDetails((v) => !v)} className="text-xs font-medium text-text-secondary underline-offset-2 hover:underline">
+            {showDetails ? '隐藏原始详情' : '查看原始详情（按引擎解析失败时可用于排查）'}
+          </button>
+          {showDetails ? (
+            <pre className="mt-2 overflow-x-auto rounded-lg border border-border-subtle bg-background-primary p-3 text-[11px] text-text-muted">{JSON.stringify(block.rawDetails, null, 2)}</pre>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className={clsx('mt-3 rounded-lg border px-3 py-2 text-xs text-text-secondary', insights.risk === 'high' ? 'border-rose-500/30 bg-rose-500/10' : 'border-warning/20 bg-warning-faint/40')}>
+        风险提示：批准后，CLI 将继续执行当前被拦截的操作，可能涉及文件修改、命令执行或外部访问。
+        {insights.risk === 'high' ? ' 当前解析结果表明该请求包含高风险行为，默认建议拒绝。' : ''}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button type="button" onClick={() => void handleRespond(true)} disabled={block.status !== 'pending' || submitting} className={clsx('inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50', insights.risk === 'high' ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500')}>
+          <Check className="h-3.5 w-3.5" /> {insights.risk === 'high' ? '仍要批准' : '批准并继续'}
+        </button>
+        <button type="button" onClick={() => void handleRespond(false)} disabled={block.status !== 'pending' || submitting} className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50">
+          <XCircle className="h-3.5 w-3.5" /> {insights.recommendation === 'deny' ? '建议拒绝' : '拒绝本次操作'}
+        </button>
+      </div>
+    </div>
+  );
+});
+
 /** 内容块渲染器 */
 function renderContentBlock(block: ContentBlock, isStreaming?: boolean): React.ReactNode {
   switch (block.type) {
@@ -987,21 +1325,104 @@ function renderContentBlock(block: ContentBlock, isStreaming?: boolean): React.R
       return <TextBlockRenderer key={`text-${block.content.slice(0, 20)}`} block={block} isStreaming={isStreaming} />;
     case 'tool_call':
       return <ToolCallBlockRenderer key={block.id} block={block} />;
+    case 'permission_request':
+      return <PermissionCard key={block.id} block={block} />;
     default:
       return null;
   }
+}
+
+/** assistant 临时状态块 */
+const AssistantInlineStatus = memo(function AssistantInlineStatus({
+  status,
+}: {
+  status: { kind: 'reconnecting' | 'error'; summary: string; detail: string }
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={clsx(
+      'rounded-lg border px-3 py-2 mb-2',
+      status.kind === 'reconnecting'
+        ? 'border-warning/30 bg-warning-faint/60'
+        : 'border-danger/30 bg-danger-faint'
+    )}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <AlertTriangle className={clsx('w-4 h-4 shrink-0', status.kind === 'reconnecting' ? 'text-warning' : 'text-danger')} />
+          <span className="text-xs font-medium text-text-primary truncate">{status.summary}</span>
+        </div>
+        {expanded ? (
+          <ChevronDown className="w-4 h-4 text-text-tertiary shrink-0" />
+        ) : (
+          <ChevronRight className="w-4 h-4 text-text-tertiary shrink-0" />
+        )}
+      </button>
+
+      {expanded && (
+        <pre className="mt-2 text-xs text-text-secondary whitespace-pre-wrap break-words font-mono">{status.detail}</pre>
+      )}
+    </div>
+  );
+});
+
+const CliStatusBar = memo(function CliStatusBar({
+  message,
+  status,
+}: {
+  message: string;
+  status?: 'running' | 'tool' | 'error';
+}) {
+  const tone = status === 'error'
+    ? 'border-danger/30 bg-danger-faint text-danger'
+    : status === 'tool'
+      ? 'border-primary/30 bg-primary-faint/50 text-primary'
+      : 'border-warning/30 bg-warning-faint/60 text-warning';
+
+  return (
+    <div className={clsx('rounded-lg border px-3 py-2 mb-2 flex items-center gap-2', tone)}>
+      <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+      <span className="text-xs font-medium leading-5">{message}</span>
+    </div>
+  );
+});
+
+function buildStreamingCliStatus(
+  message: AssistantChatMessage,
+  runStatus: ChatRunStatus | null,
+): { message: string; status: 'running' | 'tool' } | null {
+  if (runStatus && (runStatus.kind === 'running' || runStatus.kind === 'tool')) {
+    return {
+      message: runStatus.summary,
+      status: runStatus.kind === 'tool' ? 'tool' : 'running',
+    };
+  }
+
+  if (message.isStreaming) {
+    return { message: 'CLI 运行中', status: 'running' };
+  }
+
+  return null;
 }
 
 /** 助手消息组件 - 使用内容块架构 */
 const AssistantBubble = memo(function AssistantBubble({
   message,
   engineLabel,
+  runStatus,
 }: {
   message: AssistantChatMessage;
   engineLabel: string;
+  runStatus?: ChatRunStatus | null;
 }) {
   const hasBlocks = message.blocks && message.blocks.length > 0;
-  const isError = (message as any).isError === true;
+  const isError = message.isError === true;
+  const inlineStatus = message.inlineStatus;
+  const cliStatus = buildStreamingCliStatus(message, runStatus ?? null);
 
   return (
     <div className="group flex gap-3 my-2 items-start">
@@ -1014,6 +1435,7 @@ const AssistantBubble = memo(function AssistantBubble({
         <span className="text-sm font-bold text-white">{isError ? '!' : 'P'}</span>
       </div>
       <div className="flex-1 space-y-1 min-w-0 max-w-[75%]">
+        {cliStatus ? <CliStatusBar message={cliStatus.message} status={cliStatus.status} /> : null}
         <div className="flex items-center gap-2">
           <span className={clsx("text-sm font-medium", isError ? "text-danger" : "text-text-primary")}>{isError ? '错误' : engineLabel}</span>
           <span className="text-xs text-text-tertiary">
@@ -1044,6 +1466,7 @@ const AssistantBubble = memo(function AssistantBubble({
             dangerouslySetInnerHTML={{ __html: formatContent(message.content) }}
           />
         ) : null}
+        {inlineStatus && !message.isStreaming ? <AssistantInlineStatus status={inlineStatus} /> : null}
         {message.isStreaming && (
           <span className="inline-flex ml-1">
             <span className="flex gap-0.5 items-end h-4">
@@ -1062,6 +1485,13 @@ const AssistantBubble = memo(function AssistantBubble({
   if (prevProps.engineLabel !== nextProps.engineLabel) return false;
   if (prevProps.message.id !== nextProps.message.id) return false;
   if (prevProps.message.isStreaming !== nextProps.message.isStreaming) return false;
+  if ((prevProps.runStatus?.summary ?? null) !== (nextProps.runStatus?.summary ?? null)) return false;
+  if ((prevProps.runStatus?.kind ?? null) !== (nextProps.runStatus?.kind ?? null)) return false;
+  const prevInlineStatus = prevProps.message.inlineStatus;
+  const nextInlineStatus = nextProps.message.inlineStatus;
+  if ((prevInlineStatus?.summary ?? null) !== (nextInlineStatus?.summary ?? null)) return false;
+  if ((prevInlineStatus?.detail ?? null) !== (nextInlineStatus?.detail ?? null)) return false;
+  if ((prevInlineStatus?.kind ?? null) !== (nextInlineStatus?.kind ?? null)) return false;
   if (prevBlocks.length !== nextBlocks.length) return false;
   // 逐块比较，确保工具块状态/输出变化都能触发重渲染
   for (let i = 0; i < prevBlocks.length; i++) {
@@ -1089,12 +1519,12 @@ const SystemBubble = memo(function SystemBubble({ content }: { content: string }
 });
 
 /** 消息渲染器 */
-function renderChatMessage(message: ChatMessage, engineLabel: string): React.ReactNode {
+function renderChatMessage(message: ChatMessage, engineLabel: string, runStatus: ChatRunStatus | null): React.ReactNode {
   switch (message.type) {
     case 'user':
       return <UserBubble key={message.id} message={message} />;
     case 'assistant':
-      return <AssistantBubble key={message.id} message={message} engineLabel={engineLabel} />;
+      return <AssistantBubble key={message.id} message={message} engineLabel={engineLabel} runStatus={message.isStreaming ? runStatus : null} />;
     case 'system':
       return <SystemBubble key={message.id} content={(message as any).content} />;
     default:
@@ -1167,7 +1597,7 @@ export function EnhancedChatMessages() {
   const archivedMessages = useChatMessageStore((s) => s.archivedMessages);
   const loadArchivedMessages = useChatMessageStore((s) => s.loadArchivedMessages);
   const currentMessage = useChatMessageStore((s) => s.currentMessage);
-  const progressMessage = useChatMessageStore((s) => s.progressMessage);
+  const runStatus = useChatMessageStore((s) => s.runStatus);
   const inputTokens = useChatMessageStore((s) => s.inputTokens);
   const outputTokens = useChatMessageStore((s) => s.outputTokens);
   const isStreaming = useChatSessionStore((s) => s.isStreaming);
@@ -1230,6 +1660,7 @@ export function EnhancedChatMessages() {
           ...messages[existingIndex],
           blocks: currentMessage.blocks,
           isStreaming: true,
+          inlineStatus: currentMessage.inlineStatus ?? ((messages[existingIndex] as AssistantChatMessage).inlineStatus ?? null),
         } as AssistantChatMessage,
         ...messages.slice(existingIndex + 1),
       ];
@@ -1242,6 +1673,7 @@ export function EnhancedChatMessages() {
         blocks: currentMessage.blocks,
         timestamp: new Date().toISOString(),
         isStreaming: true,
+        inlineStatus: currentMessage.inlineStatus ?? null,
       }];
       prevDisplayMessagesRef.current = newMessages;
       return newMessages;
@@ -1391,19 +1823,19 @@ export function EnhancedChatMessages() {
               ref={virtuosoRef}
               style={{ height: '100%' }}
               data={displayMessages}
-              itemContent={(_index, item) => renderChatMessage(item, currentEngineLabel)}
+              itemContent={(_index, item) => renderChatMessage(item, currentEngineLabel, runStatus)}
               components={{
                 EmptyPlaceholder: () => null,
                 Footer: () => (
                   <div>
-                    {isStreaming && (
+                    {isStreaming && runStatus && (runStatus.kind === 'running' || runStatus.kind === 'tool') && (
                       <div className="flex items-center gap-2 px-4 py-3 mb-2">
                         <div className="flex gap-1">
                           <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                           <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
                           <span className="w-1.5 h-1.5 bg-warning rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                         </div>
-                        <span className="text-xs text-text-tertiary">{progressMessage || '生成中'}</span>
+                        <span className="text-xs text-text-tertiary">{runStatus.summary}</span>
                       </div>
                     )}
                     <div style={{ height: '120px' }} />

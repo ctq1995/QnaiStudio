@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_session_end_reason() -> String {
+    "completed".to_string()
+}
+
 /// 权限拒绝详情
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionDenial {
@@ -81,7 +85,10 @@ pub enum StreamEvent {
 
     /// 会话结束
     #[serde(rename = "session_end")]
-    SessionEnd,
+    SessionEnd {
+        #[serde(default = "default_session_end_reason")]
+        reason: String,
+    },
 }
 
 impl StreamEvent {
@@ -125,7 +132,9 @@ impl StreamEvent {
             "token" => parse_ai_token(value),
             "progress" => parse_ai_progress(value),
             "error" => parse_ai_error(value),
-            "message_stop" | "message_end" | "session_end" => Some(StreamEvent::SessionEnd),
+            "message_stop" | "message_end" | "session_end" => Some(StreamEvent::SessionEnd {
+                reason: default_session_end_reason(),
+            }),
             _ => None,
         }
     }

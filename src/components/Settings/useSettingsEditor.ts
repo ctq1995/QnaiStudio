@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Config, EngineId } from '../../types';
+import type { Config, EngineId, ModelProviderConfig, ProviderKind, ClaudeAdvancedParams, CodexAdvancedParams, GeminiAdvancedParams } from '../../types';
 
 interface UseSettingsEditorOptions {
   config: Config | null;
@@ -30,6 +30,22 @@ function useLocalSettingsDraft(config: Config | null): LocalSettingsDraft {
 
 type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
 
+export interface ProviderDraft {
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey: string;
+}
+
+function createProviderDraft(): ProviderDraft {
+  return {
+    name: '',
+    kind: 'openai-compatible',
+    baseUrl: '',
+    apiKey: '',
+  };
+}
+
 export interface SaveFeedback {
   status: SaveStatus;
   message: string | null;
@@ -53,6 +69,7 @@ export function useSettingsEditor(options: UseSettingsEditorOptions) {
   const { localConfig, setLocalConfig } = useLocalSettingsDraft(config);
 
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback>(createIdleFeedback);
+  const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
   const hasUnsavedChanges = useMemo(() => isConfigDirty(config, localConfig), [config, localConfig]);
 
   const markEdited = useCallback(() => {
@@ -101,6 +118,108 @@ export function useSettingsEditor(options: UseSettingsEditorOptions) {
     });
   }, [markEdited, setLocalConfig]);
 
+  /** Update Claude Code advanced parameters */
+  const updateClaudeAdvanced = useCallback(<K extends keyof ClaudeAdvancedParams>(key: K, value: ClaudeAdvancedParams[K]) => {
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      const adv = current.claudeCode.advanced ?? {};
+      return {
+        ...current,
+        claudeCode: { ...current.claudeCode, advanced: { ...adv, [key]: value } },
+      };
+    });
+  }, [markEdited, setLocalConfig]);
+
+  /** Update Codex CLI advanced parameters */
+  const updateCodexAdvanced = useCallback(<K extends keyof CodexAdvancedParams>(key: K, value: CodexAdvancedParams[K]) => {
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      const adv = current.codexCli.advanced ?? {};
+      return {
+        ...current,
+        codexCli: { ...current.codexCli, advanced: { ...adv, [key]: value } },
+      };
+    });
+  }, [markEdited, setLocalConfig]);
+
+  /** Update Gemini CLI advanced parameters */
+  const updateGeminiAdvanced = useCallback(<K extends keyof GeminiAdvancedParams>(key: K, value: GeminiAdvancedParams[K]) => {
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      const adv = current.gemini.advanced ?? {};
+      return {
+        ...current,
+        gemini: { ...current.gemini, advanced: { ...adv, [key]: value } },
+      };
+    });
+  }, [markEdited, setLocalConfig]);
+
+  const startProviderDraft = useCallback(() => {
+    setProviderDraft((current) => current ?? createProviderDraft());
+  }, []);
+
+  const updateProviderDraft = useCallback(<K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) => {
+    setProviderDraft((current) => (current ? { ...current, [key]: value } : current));
+  }, []);
+
+  const cancelProviderDraft = useCallback(() => {
+    setProviderDraft(null);
+  }, []);
+
+  const submitProviderDraft = useCallback(() => {
+    if (!providerDraft?.name.trim()) {
+      return;
+    }
+
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      const nextProvider: ModelProviderConfig = {
+        id: `provider-${Date.now()}`,
+        name: providerDraft.name.trim(),
+        kind: providerDraft.kind,
+        baseUrl: providerDraft.baseUrl.trim(),
+        apiKey: providerDraft.apiKey.trim(),
+      };
+      return {
+        ...current,
+        providers: [...(current.providers ?? []), nextProvider],
+      };
+    });
+    setProviderDraft(null);
+  }, [markEdited, providerDraft, setLocalConfig]);
+
+  const updateProvider = useCallback(<K extends keyof ModelProviderConfig>(providerId: string, key: K, value: ModelProviderConfig[K]) => {
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        providers: (current.providers ?? []).map((provider) =>
+          provider.id === providerId ? { ...provider, [key]: value } : provider,
+        ),
+      };
+    });
+  }, [markEdited, setLocalConfig]);
+
+  const removeProvider = useCallback((providerId: string) => {
+    markEdited();
+    setLocalConfig((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        providers: (current.providers ?? []).filter((provider) => provider.id !== providerId),
+        claudeCode: current.claudeCode.providerId === providerId ? { ...current.claudeCode, providerId: undefined } : current.claudeCode,
+        codexCli: current.codexCli.providerId === providerId ? { ...current.codexCli, providerId: undefined } : current.codexCli,
+        gemini: current.gemini.providerId === providerId ? { ...current.gemini, providerId: undefined } : current.gemini,
+        iflow: current.iflow.providerId === providerId ? { ...current.iflow, providerId: undefined } : current.iflow,
+      };
+    });
+  }, [markEdited, setLocalConfig]);
+
   const handleSave = useCallback(async () => {
     if (!localConfig) {
       return;
@@ -132,6 +251,16 @@ export function useSettingsEditor(options: UseSettingsEditorOptions) {
     updateGeminiPath,
     updateFloating,
     updateEngineParam,
+    updateClaudeAdvanced,
+    updateCodexAdvanced,
+    updateGeminiAdvanced,
+    providerDraft,
+    startProviderDraft,
+    updateProviderDraft,
+    cancelProviderDraft,
+    submitProviderDraft,
+    updateProvider,
+    removeProvider,
     handleSave,
     requestClose,
   };

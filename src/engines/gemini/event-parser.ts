@@ -86,8 +86,13 @@ export class GeminiEventParser extends BaseEventParser<GeminiStreamEvent> {
       }
 
       case 'error': {
-        const errorMsg = (event.error as string) || '未知错误'
-        results.push(createErrorEvent(errorMsg))
+        const errorMsg = ((event.error as string) || '未知错误').trim()
+        const reconnectMatch = errorMsg.match(/^Reconnecting\.\.\.\s*(\d+\/\d+)/i)
+        if (reconnectMatch) {
+          results.push(createProgressEvent(`连接中断，正在重连 ${reconnectMatch[1]}`))
+        } else {
+          results.push(createErrorEvent(errorMsg))
+        }
         break
       }
 

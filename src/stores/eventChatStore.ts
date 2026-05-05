@@ -12,27 +12,36 @@
 import { useChatMessageStore } from './chat/chatMessageStore'
 import { useChatSessionStore } from './chat/chatSessionStore'
 import { useChatHistoryStore, type UnifiedHistoryItem } from './chat/chatHistoryStore'
+import type { ChatRunStatus, CurrentAssistantMessage } from './chat/chatEventUtils'
 
 export type { UnifiedHistoryItem }
 
 /**
- * 组合 hook — 返回与原 useEventChatStore 完全相同的接口
+ * 组合 hook — 返回与原 useEventChatStore 基本兼容的接口。
  *
  * 使用方式不变：
  *   const { messages, isStreaming, sendMessage, ... } = useEventChatStore()
  *
- * 性能提升：组件现在可以按需只订阅需要的子 store，
- * 例如只关心消息列表的组件不会因为 isStreaming 变化而重渲染。
+ * 注意：这里是兼容门面，不是细粒度订阅层。
+ * 当前实现会先订阅 message/session/history 三个子 store，再拼装 facade；
+ * 因此即使传入 selector，也不能保证 Zustand 原生 selector 那样的最小重渲染语义。
+ *
+ * 结论：
+ * - 适合保留旧 API、渐进迁移现有调用方；
+ * - 不应把它当成性能优化入口；
+ * - 对重渲染敏感的新组件应直接订阅对应子 store。
  */
 export function useEventChatStore(): EventChatFacade
 export function useEventChatStore<T>(selector: (state: EventChatFacade) => T): T
 export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
+  // 兼容门面：这里故意保留“整块订阅后再组合”的实现，
+  // 以避免在尚未完成迁移前引入隐藏行为差异。
+  // 对性能敏感的场景请直接使用子 store，而不是依赖这里的 selector。
   const msgState = useChatMessageStore()
   const sessionState = useChatSessionStore()
   const historyState = useChatHistoryStore()
 
   const facade: EventChatFacade = {
-    // === chatMessageStore state ===
     messages: msgState.messages,
     archivedMessages: msgState.archivedMessages,
     isArchiveExpanded: msgState.isArchiveExpanded,
@@ -42,18 +51,17 @@ export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
     tokenBuffer: msgState.tokenBuffer,
     outputTokens: msgState.outputTokens,
     inputTokens: msgState.inputTokens,
-    progressMessage: msgState.progressMessage,
+    runStatus: msgState.runStatus,
 
-    // === chatSessionStore state ===
     conversationId: sessionState.conversationId,
     isStreaming: sessionState.isStreaming,
     error: sessionState.error,
     isInitialized: sessionState.isInitialized,
+    pendingQueue: sessionState.pendingQueue,
+    activeQueueItem: sessionState.activeQueueItem,
 
-    // === chatHistoryStore state ===
     isLoadingHistory: historyState.isLoadingHistory,
 
-    // === chatMessageStore actions ===
     addMessage: (message) => {
       useChatMessageStore.getState().addMessage(message)
       useChatHistoryStore.getState().saveToStorage()
@@ -62,7 +70,7 @@ export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
     clearMessages: () => {
       useChatHistoryStore.getState().saveToHistory()
       useChatMessageStore.getState().clearMessages()
-      useChatSessionStore.setState({ conversationId: null })
+      useChatSessionStore.setState({ conversationId: null, pendingQueue: [], activeQueueItem: null })
     },
     deleteMessage: msgState.deleteMessage,
     setMaxMessages: msgState.setMaxMessages,
@@ -80,9 +88,7 @@ export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
       useChatHistoryStore.getState().saveToHistory()
     },
     addErrorMessage: msgState.addErrorMessage,
-    setProgressMessage: msgState.setProgressMessage,
 
-    // === chatSessionStore actions ===
     setConversationId: sessionState.setConversationId,
     setStreaming: sessionState.setStreaming,
     setError: sessionState.setError,
@@ -92,11 +98,30 @@ export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
       useChatHistoryStore.getState().saveToStorage()
       useChatHistoryStore.getState().saveToHistory()
     },
+    enqueueMessage: async (content, workspaceDir) => {
+      await useChatSessionStore.getState().enqueueMessage(content, workspaceDir)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    editQueuedMessage: (queueItemId, content) => {
+      useChatSessionStore.getState().editQueuedMessage(queueItemId, content)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    removeQueuedMessage: (queueItemId) => {
+      useChatSessionStore.getState().removeQueuedMessage(queueItemId)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    clearPendingQueue: () => {
+      useChatSessionStore.getState().clearPendingQueue()
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
     continueChat: sessionState.continueChat,
     interruptChat: sessionState.interruptChat,
     regenerateMessage: sessionState.regenerateMessage,
 
-    // === chatHistoryStore actions ===
     saveToStorage: historyState.saveToStorage,
     restoreFromStorage: historyState.restoreFromStorage,
     saveToHistory: historyState.saveToHistory,
@@ -112,9 +137,6 @@ export function useEventChatStore<T>(selector?: (state: EventChatFacade) => T) {
   return facade
 }
 
-/**
- * 静态方法 — 兼容 useEventChatStore.getState() 调用
- */
 useEventChatStore.getState = (): EventChatFacade => {
   const msgState = useChatMessageStore.getState()
   const sessionState = useChatSessionStore.getState()
@@ -130,12 +152,14 @@ useEventChatStore.getState = (): EventChatFacade => {
     tokenBuffer: msgState.tokenBuffer,
     outputTokens: msgState.outputTokens,
     inputTokens: msgState.inputTokens,
-    progressMessage: msgState.progressMessage,
+    runStatus: msgState.runStatus,
 
     conversationId: sessionState.conversationId,
     isStreaming: sessionState.isStreaming,
     error: sessionState.error,
     isInitialized: sessionState.isInitialized,
+    pendingQueue: sessionState.pendingQueue,
+    activeQueueItem: sessionState.activeQueueItem,
 
     isLoadingHistory: historyState.isLoadingHistory,
 
@@ -147,7 +171,7 @@ useEventChatStore.getState = (): EventChatFacade => {
     clearMessages: () => {
       useChatHistoryStore.getState().saveToHistory()
       useChatMessageStore.getState().clearMessages()
-      useChatSessionStore.setState({ conversationId: null })
+      useChatSessionStore.setState({ conversationId: null, pendingQueue: [], activeQueueItem: null })
     },
     deleteMessage: msgState.deleteMessage,
     setMaxMessages: msgState.setMaxMessages,
@@ -165,7 +189,6 @@ useEventChatStore.getState = (): EventChatFacade => {
       useChatHistoryStore.getState().saveToHistory()
     },
     addErrorMessage: msgState.addErrorMessage,
-    setProgressMessage: msgState.setProgressMessage,
 
     setConversationId: sessionState.setConversationId,
     setStreaming: sessionState.setStreaming,
@@ -173,6 +196,26 @@ useEventChatStore.getState = (): EventChatFacade => {
     initializeEventListeners: sessionState.initializeEventListeners,
     sendMessage: async (content, workspaceDir) => {
       await useChatSessionStore.getState().sendMessage(content, workspaceDir)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    enqueueMessage: async (content, workspaceDir) => {
+      await useChatSessionStore.getState().enqueueMessage(content, workspaceDir)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    editQueuedMessage: (queueItemId, content) => {
+      useChatSessionStore.getState().editQueuedMessage(queueItemId, content)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    removeQueuedMessage: (queueItemId) => {
+      useChatSessionStore.getState().removeQueuedMessage(queueItemId)
+      useChatHistoryStore.getState().saveToStorage()
+      useChatHistoryStore.getState().saveToHistory()
+    },
+    clearPendingQueue: () => {
+      useChatSessionStore.getState().clearPendingQueue()
       useChatHistoryStore.getState().saveToStorage()
       useChatHistoryStore.getState().saveToHistory()
     },
@@ -190,13 +233,9 @@ useEventChatStore.getState = (): EventChatFacade => {
   }
 }
 
-/**
- * 静态方法 — 兼容 useEventChatStore.setState() 调用
- */
 useEventChatStore.setState = (partial: Partial<EventChatFacade>) => {
-  // 分发到对应的子 store
-  const msgKeys = ['messages', 'archivedMessages', 'isArchiveExpanded', 'maxMessages', 'currentMessage', 'toolBlockMap', 'tokenBuffer', 'outputTokens', 'inputTokens', 'progressMessage'] as const
-  const sessionKeys = ['conversationId', 'isStreaming', 'error', 'isInitialized'] as const
+  const msgKeys = ['messages', 'archivedMessages', 'isArchiveExpanded', 'maxMessages', 'currentMessage', 'toolBlockMap', 'tokenBuffer', 'outputTokens', 'inputTokens', 'runStatus'] as const
+  const sessionKeys = ['conversationId', 'isStreaming', 'error', 'isInitialized', 'pendingQueue', 'activeQueueItem'] as const
   const historyKeys = ['isLoadingHistory'] as const
 
   const msgPartial: Record<string, unknown> = {}
@@ -222,11 +261,9 @@ useEventChatStore.setState = (partial: Partial<EventChatFacade>) => {
 // 类型定义 — 与原 EventChatState 完全一致
 // ============================================================================
 import type { ChatMessage, ContentBlock, ToolStatus } from '../types'
-import type { CurrentAssistantMessage } from './chat/chatEventUtils'
 import type { TokenBuffer } from '../utils/tokenBuffer'
 
 export interface EventChatFacade {
-  // State
   messages: ChatMessage[]
   archivedMessages: ChatMessage[]
   isArchiveExpanded: boolean
@@ -236,14 +273,15 @@ export interface EventChatFacade {
   maxMessages: number
   isInitialized: boolean
   isLoadingHistory: boolean
-  progressMessage: string | null
+  runStatus: ChatRunStatus | null
   inputTokens: number
   outputTokens: number
   currentMessage: CurrentAssistantMessage | null
   toolBlockMap: Map<string, number>
   tokenBuffer: TokenBuffer | null
+  pendingQueue: { id: string; content: string; workspaceDir?: string; status: 'queued' | 'running'; createdAt: string; messageId?: string }[]
+  activeQueueItem: { id: string; content: string; workspaceDir?: string; status: 'queued' | 'running'; createdAt: string; messageId?: string } | null
 
-  // Actions
   addMessage: (message: ChatMessage) => void
   clearMessages: () => void
   deleteMessage: (id: string) => void
@@ -253,7 +291,6 @@ export interface EventChatFacade {
   finishMessage: () => void
   setError: (error: string | null) => void
   addErrorMessage: (error: string) => void
-  setProgressMessage: (message: string | null) => void
   appendTextBlock: (content: string) => void
   appendToolCallBlock: (toolId: string, toolName: string, input: Record<string, unknown>) => void
   updateToolCallBlock: (toolId: string, status: ToolStatus, output?: string, error?: string) => void
@@ -261,6 +298,10 @@ export interface EventChatFacade {
   updateCurrentAssistantMessage: (blocks: ContentBlock[]) => void
   initializeEventListeners: () => () => void
   sendMessage: (content: string, workspaceDir?: string) => Promise<void>
+  enqueueMessage: (content: string, workspaceDir?: string) => Promise<void>
+  editQueuedMessage: (queueItemId: string, content: string) => void
+  removeQueuedMessage: (queueItemId: string) => void
+  clearPendingQueue: () => void
   continueChat: (prompt?: string) => Promise<void>
   interruptChat: () => Promise<void>
   setMaxMessages: (max: number) => void

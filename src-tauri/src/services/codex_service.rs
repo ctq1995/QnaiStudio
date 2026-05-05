@@ -99,11 +99,25 @@ impl CodexService {
 
     fn build_exec_command(codex_cmd: &str, message: &str, config: &Config) -> Command {
         let mut command = Command::new(codex_cmd);
-        command
-            .arg("exec")
-            .arg("--json")
-            .arg("--skip-git-repo-check")
-            .arg("--dangerously-bypass-approvals-and-sandbox");
+        command.arg("exec").arg("--json");
+
+        // Advanced params
+        let adv = config.codex_cli.advanced.as_ref();
+        let skip_git = adv.and_then(|a| a.skip_git_repo_check).unwrap_or(true);
+        let bypass = adv.and_then(|a| a.bypass_approvals_and_sandbox).unwrap_or(true);
+
+        if skip_git {
+            command.arg("--skip-git-repo-check");
+        }
+        if bypass {
+            command.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+
+        // approval-mode takes precedence over bypass flag when set
+        if let Some(approval_mode) = adv.and_then(|a| a.approval_mode.as_ref()) {
+            command.arg("--approval-mode").arg(approval_mode.as_str());
+        }
+
         if let Some(ref model) = config.codex_cli.model {
             if !model.is_empty() {
                 command.arg("--model").arg(model);
@@ -115,20 +129,31 @@ impl CodexService {
 
     fn build_resume_command(codex_cmd: &str, session_id: &str, message: &str, config: &Config) -> Command {
         let mut command = Command::new(codex_cmd);
-        command
-            .arg("exec")
-            .arg("resume")
-            .arg("--json")
-            .arg("--skip-git-repo-check")
-            .arg("--dangerously-bypass-approvals-and-sandbox");
+        command.arg("exec").arg("resume").arg("--json");
+
+        // Advanced params
+        let adv = config.codex_cli.advanced.as_ref();
+        let skip_git = adv.and_then(|a| a.skip_git_repo_check).unwrap_or(true);
+        let bypass = adv.and_then(|a| a.bypass_approvals_and_sandbox).unwrap_or(true);
+
+        if skip_git {
+            command.arg("--skip-git-repo-check");
+        }
+        if bypass {
+            command.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+
+        // approval-mode takes precedence over bypass flag when set
+        if let Some(approval_mode) = adv.and_then(|a| a.approval_mode.as_ref()) {
+            command.arg("--approval-mode").arg(approval_mode.as_str());
+        }
+
         if let Some(ref model) = config.codex_cli.model {
             if !model.is_empty() {
                 command.arg("--model").arg(model);
             }
         }
-        command
-            .arg(session_id)
-            .arg(message);
+        command.arg(session_id).arg(message);
         command
     }
 
@@ -140,15 +165,15 @@ impl CodexService {
         }
 
         eprintln!("[CodexService] codex_cli config: api_key={:?}, base_url={:?}, model={:?}",
-            config.codex_cli.api_key.as_deref().map(|k| if k.len() > 8 { &k[..8] } else { k }),
-            config.codex_cli.base_url,
+            config.resolve_codex_api_key().map(|k| if k.len() > 8 { &k[..8] } else { k }),
+            config.resolve_codex_base_url(),
             config.codex_cli.model,
         );
 
         // Codex CLI 优先读取 ~/.codex/config.toml 和 auth.json，环境变量优先级较低。
         // 当 UI 配置了自定义值时，使用临时 CODEX_HOME 目录确保 UI 配置生效。
-        let has_custom_config = config.codex_cli.api_key.as_ref().map_or(false, |k| !k.is_empty())
-            || config.codex_cli.base_url.as_ref().map_or(false, |u| !u.is_empty());
+        let has_custom_config = config.resolve_codex_api_key().is_some()
+            || config.resolve_codex_base_url().is_some();
 
         if has_custom_config {
             if let Ok(temp_home) = Self::create_temp_codex_home(config) {
@@ -158,17 +183,13 @@ impl CodexService {
         }
 
         // 环境变量作为额外保障
-        if let Some(ref api_key) = config.codex_cli.api_key {
-            if !api_key.is_empty() {
-                command.env_remove("OPENAI_API_KEY");
-                command.env("OPENAI_API_KEY", api_key);
-            }
+        if let Some(api_key) = config.resolve_codex_api_key() {
+            command.env_remove("OPENAI_API_KEY");
+            command.env("OPENAI_API_KEY", api_key);
         }
-        if let Some(ref base_url) = config.codex_cli.base_url {
-            if !base_url.is_empty() {
-                command.env_remove("OPENAI_BASE_URL");
-                command.env("OPENAI_BASE_URL", base_url);
-            }
+        if let Some(base_url) = config.resolve_codex_base_url() {
+            command.env_remove("OPENAI_BASE_URL");
+            command.env("OPENAI_BASE_URL", base_url);
         }
         if let Some(ref model) = config.codex_cli.model {
             if !model.is_empty() {
@@ -212,28 +233,26 @@ impl CodexService {
         }
 
         // 如果 UI 配置了 base_url，修改 config.toml 中的 model_providers 部分
-        if let Some(ref base_url) = config.codex_cli.base_url {
-            if !base_url.is_empty() {
-                // 替换或追加 base_url 配置
-                if base_config.contains("[model_providers.OpenAI]") {
-                    // 替换已有的 base_url
-                    let mut new_config = String::new();
-                    for line in base_config.lines() {
-                        if line.trim_start().starts_with("base_url") && new_config.contains("[model_providers.OpenAI]") {
-                            new_config.push_str(&format!("base_url = \"{}\"\n", base_url));
-                        } else {
-                            new_config.push_str(line);
-                            new_config.push('\n');
-                        }
+        if let Some(base_url) = config.resolve_codex_base_url() {
+            // 替换或追加 base_url 配置
+            if base_config.contains("[model_providers.OpenAI]") {
+                // 替换已有的 base_url
+                let mut new_config = String::new();
+                for line in base_config.lines() {
+                    if line.trim_start().starts_with("base_url") && new_config.contains("[model_providers.OpenAI]") {
+                        new_config.push_str(&format!("base_url = \"{}\"\n", base_url));
+                    } else {
+                        new_config.push_str(line);
+                        new_config.push('\n');
                     }
-                    base_config = new_config;
-                } else {
-                    // 追加 provider 配置
-                    base_config.push_str(&format!(
-                        "\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"{}\"\n",
-                        base_url
-                    ));
                 }
+                base_config = new_config;
+            } else {
+                // 追加 provider 配置
+                base_config.push_str(&format!(
+                    "\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"{}\"\n",
+                    base_url
+                ));
             }
         }
 
@@ -243,7 +262,7 @@ impl CodexService {
             .map_err(|e| AppError::ProcessError(format!("写入 config.toml 失败: {}", e)))?;
 
         // 写入 auth.json
-        let api_key = config.codex_cli.api_key.as_deref().unwrap_or("");
+        let api_key = config.resolve_codex_api_key().unwrap_or("");
         if !api_key.is_empty() {
             let auth_json = format!("{{\"OPENAI_API_KEY\":\"{}\"}}", api_key);
             let auth_path = temp_dir.join("auth.json");

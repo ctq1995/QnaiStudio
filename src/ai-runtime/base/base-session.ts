@@ -85,13 +85,14 @@ export function createEventIterable(
 /**
  * 默认的会话完成条件检测器
  *
- * 大多数 CLI Engine 会在以下情况结束会话：
- * - session_end 事件
- * - error 事件
+ * 大多数 CLI Engine 会在收到 session_end 事件时结束会话。
+ *
+ * 注意：error 事件不一定意味着会话已终止；某些引擎会发出可恢复的
+ * 中间态错误（例如 reconnecting / transient transport errors）。
+ * 终止语义应由 session_end(reason) 明确表达，而不是由 error 隐式推断。
  */
 export function createDefaultCompletionChecker(): (event: AIEvent) => boolean {
-  return (event: AIEvent) =>
-    event.type === 'session_end' || event.type === 'error'
+  return (event: AIEvent) => event.type === 'session_end'
 }
 
 /**
@@ -161,8 +162,9 @@ export abstract class BaseSession implements AISession {
       for await (const event of eventIterable) {
         yield event
 
-        // 检查会话结束
-        if (event.type === 'session_end' || event.type === 'error') {
+        // 会话终止只由 session_end 明确表达。
+        // error 可能是可恢复的中间态事件（例如重连），不能在这里提前 break。
+        if (event.type === 'session_end') {
           break
         }
       }

@@ -120,7 +120,9 @@ impl IFlowJsonlEvent {
                     }
                     // 检查是否会话结束
                     if message.stop_reason.is_some() {
-                        events.push(crate::models::events::StreamEvent::SessionEnd);
+                        events.push(crate::models::events::StreamEvent::SessionEnd {
+                            reason: "completed".to_string(),
+                        });
                     }
                 }
             }
@@ -253,17 +255,6 @@ impl IFlowJsonlEvent {
         String::new()
     }
 
-    /// 是否为会话结束事件
-    pub fn is_session_end(&self) -> bool {
-        // IFlow 没有明确的 session_end 事件
-        // 我们通过检查是否有 stop_reason 来判断
-        if let Some(ref message) = self.message {
-            if let Some(ref stop_reason) = message.stop_reason {
-                return stop_reason == "STOP" || stop_reason == "max_tokens" || stop_reason == "end_turn";
-            }
-        }
-        false
-    }
 
     /// 提取消息的文本内容
     pub fn extract_text_content(&self) -> String {
@@ -391,6 +382,7 @@ pub struct IFlowTokenStats {
 }
 
 /// IFlow 项目配置（从 projects.json 读取）
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IFlowProjectConfig {
     /// 项目名称
@@ -406,6 +398,7 @@ pub struct IFlowProjectConfig {
 }
 
 /// IFlow projects.json 根结构
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IFlowProjectsConfig {
     #[serde(flatten)]

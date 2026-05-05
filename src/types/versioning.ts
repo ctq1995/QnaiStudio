@@ -3,6 +3,7 @@
  */
 
 export type WorkspaceVersionKind = 'auto' | 'manual';
+export type WorkspaceVersionStatus = 'ready' | 'failed';
 
 export interface WorkspaceVersion {
   id: string;
@@ -11,5 +12,16 @@ export interface WorkspaceVersion {
   label: string;
   kind: WorkspaceVersionKind;
   createdAt: number;
+  status: WorkspaceVersionStatus;
+  fileCount: number;
+  totalSize: number;
+}
+
+export interface RestoreWorkspaceVersionCheck {
+  versionId: string;
+  fileCount: number;
+  totalSize: number;
+  missingObjects: number;
+  hasBackupCapacity: boolean;
 }
 

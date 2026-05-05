@@ -1,16 +1,16 @@
-﻿/**
- * 鑱婂ぉ杈撳叆缁勪欢 - 鏀寔鏂滄潬鍛戒护銆佸伐浣滃尯寮曠敤銆佹枃浠跺紩鐢ㄥ拰 Git 涓婁笅鏂?
+/**
+ * 聊天输入组件。
  *
- * 鏀寔鐨勮娉曪細
- * - /command          鏂滄潬鍛戒护
- * - @workspace/path   寮曠敤鎸囧畾宸ヤ綔鍖虹殑鏂囦欢
- * - @/path            寮曠敤褰撳墠宸ヤ綔鍖虹殑鏂囦欢
- * - @git              Git 涓婁笅鏂囷紙diff, commit, log 绛夛級
+ * 支持：
+ * - /command 命令触发
+ * - @workspace/path 跨工作区文件引用
+ * - @/path 当前工作区文件引用
+ * - @git Git 上下文引用
  *
- * 鏂板鍔熻兘锛?
- * - 涓婁笅鏂囪姱鐗囧彲瑙嗗寲鏄剧ず
- * - Git 鎻愪氦閫夋嫨
- * - 绌洪棿浼樺寲鐨勭揣鍑戝竷灞€
+ * 额外能力：
+ * - 上下文 chips 可视化
+ * - Git 提交选择
+ * - 待发送队列编辑/删除
  */
 
 import { useState, useRef, KeyboardEvent, useEffect, useCallback, useMemo } from 'react';
@@ -26,9 +26,11 @@ import type { Workspace } from '../../types';
 import type { ContextChipWithId } from '../../types/context';
 import { addChipId } from '../../types/context';
 import { AutoResizingTextarea } from './AutoResizingTextarea';
+import { Pencil, Trash2 } from 'lucide-react';
 import { useFileSearch } from '../../hooks/useFileSearch';
 import { getGitCommits } from '../../services/gitContextService';
 import { getAccessibleWorkspacesByScope } from '../../utils/workspaceScope';
+import { useChatSessionStore } from '../../stores/chat/chatSessionStore';
 
 interface ChatInputProps {
   onSend: (message: string, workspaceDir?: string) => void;
@@ -39,6 +41,65 @@ interface ChatInputProps {
 }
 
 type SuggestionMode = 'command' | 'workspace' | 'file' | 'git' | null;
+
+function QueuedMessagePanel() {
+  const pendingQueue = useChatSessionStore((state) => state.pendingQueue);
+  const editQueuedMessage = useChatSessionStore((state) => state.editQueuedMessage);
+  const removeQueuedMessage = useChatSessionStore((state) => state.removeQueuedMessage);
+  const queuedItems = pendingQueue;
+
+  if (queuedItems.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mb-3 rounded-xl border border-border bg-background-surface/80 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-text-secondary">待发送队列</span>
+        <span className="text-xs text-text-tertiary">{queuedItems.length} 条</span>
+      </div>
+      <div className="space-y-2">
+        {queuedItems.map((item, index) => (
+          <div key={item.id} className="rounded-lg border border-border/80 bg-background-elevated px-3 py-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">
+                  排队中 #{index + 1}
+                </span>
+                <span className="truncate text-xs text-text-tertiary">
+                  {new Date(item.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextContent = window.prompt('编辑排队消息', item.content);
+                    const trimmed = nextContent?.trim();
+                    if (trimmed) editQueuedMessage(item.id, trimmed);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-background-surface hover:text-text-primary"
+                >
+                  <Pencil className="w-3 h-3" />
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeQueuedMessage(item.id)}
+                  className="inline-flex items-center gap-1 rounded-md border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  删除
+                </button>
+              </div>
+            </div>
+            <div className="text-sm leading-relaxed whitespace-pre-wrap text-text-primary">{item.content}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function ChatInput({
   onSend,
@@ -51,28 +112,28 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 涓婁笅鏂囪姱鐗囩姸鎬?
+  // 上下文 chips 状态
   const [contextChips, setContextChips] = useState<ContextChipWithId[]>([]);
 
-  // 鍛戒护寤鸿鐘舵€?
+  // 命令建议状态
   const [showCommandSuggestions, setShowCommandSuggestions] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [commandPosition, setCommandPosition] = useState({ top: 0, left: 0 });
 
-  // 宸ヤ綔鍖哄缓璁姸鎬?
+  // 工作区建议状态
   const [showWorkspaceSuggestions, setShowWorkspaceSuggestions] = useState(false);
   const [selectedWorkspaceIndex, setSelectedWorkspaceIndex] = useState(0);
   const [workspaceQuery, setWorkspaceQuery] = useState('');
   const [workspacePosition, setWorkspacePosition] = useState({ top: 0, left: 0 });
 
-  // 鏂囦欢寤鸿鐘舵€?
+  // 文件建议状态
   const [showFileSuggestions, setShowFileSuggestions] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [filePosition, setFilePosition] = useState({ top: 0, left: 0 });
   const [fileWorkspace, setFileWorkspace] = useState<Workspace | null>(null);
 
-  // Git 寤鸿鐘舵€?
+  // Git 建议状态
   const [showGitSuggestions, setShowGitSuggestions] = useState(false);
   const [gitMode, setGitMode] = useState<'root' | 'commit'>('root');
   const [gitQuery, setGitQuery] = useState('');
@@ -91,13 +152,13 @@ export function ChatInput({
   );
   const { fileMatches, searchFiles, clearResults } = useFileSearch();
 
-  // 缂撳瓨鍛戒护鎼滅储缁撴灉
+  // 缓存命令搜索结果
   const suggestedCommands = useMemo(
     () => searchCommands(commandQuery),
     [commandQuery, searchCommands]
   );
 
-  // 杩囨护宸ヤ綔鍖哄垪琛?
+  // 过滤工作区列表
   const filteredWorkspaces = useMemo(
     () => accessibleWorkspaces.filter(w =>
       w.name.toLowerCase().includes(workspaceQuery.toLowerCase())
@@ -623,12 +684,12 @@ export function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (!trimmed || disabled || isStreaming) return;
+    if (!trimmed || disabled) return;
 
-    // 鏋勫缓鍖呭惈涓婁笅鏂囦俊鎭殑娑堟伅
+    // 构建包含上下文信息的消息
     let finalMessage = trimmed;
 
-    // 灏嗕笂涓嬫枃鑺墖淇℃伅闄勫姞鍒版秷鎭腑
+    // 将上下文 chips 信息附加到消息中
     if (contextChips.length > 0) {
       const contextInfo = contextChips.map(chip => {
         switch (chip.type) {
@@ -651,7 +712,7 @@ export function ChatInput({
       finalMessage = `${contextInfo}\n\n${trimmed}`;
     }
 
-    // 妫€鏌ユ槸鍚︽槸鍛戒护
+    // 检查是否是命令
     const commands = getCommands();
     const result = parseCommandInput(trimmed, commands);
 
@@ -690,8 +751,8 @@ export function ChatInput({
     clearResults();
   }, [clearResults]);
 
-  // 鐐瑰嚮澶栭儴鍏抽棴寤鸿
-    // 清理 debounce timer
+  // 点击外部关闭建议
+  // 清理 debounce timer
   useEffect(() => {
     return () => {
       if (parseTriggerRef.current) clearTimeout(parseTriggerRef.current);
@@ -713,10 +774,10 @@ export function ChatInput({
   return (
     <div className="border-t border-border bg-background-elevated" ref={containerRef}>
       <div className="p-3">
-        {/* 涓婁笅鏂囪姱鐗囨爮 */}
+        <QueuedMessagePanel />
+        {/* 上下文 chips 栏 */}
         <ContextChips chips={contextChips} onRemove={removeContextChip} />
 
-        {/* 杈撳叆妗嗗鍣?- 绱у噾甯冨眬 */}
         {/* 输入框容器 - 紧凑布局 */}
         <div
           className="relative flex items-end gap-2 bg-background-surface border border-border rounded-xl p-2 focus-within:ring-2 focus-within:ring-border focus-within:border-primary transition-all shadow-soft hover:shadow-medium"
@@ -736,30 +797,31 @@ export function ChatInput({
             minHeight={36}
           />
 
-          {isStreaming ? (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={onInterrupt}
-              className="shrink-0 h-8 px-3 text-xs"
-            >
-              <IconStop size={12} className="mr-1" />
-              中断
-            </Button>
-          ) : (
+          <div className="flex items-center gap-2 shrink-0">
+            {isStreaming ? (
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={onInterrupt}
+                className="h-8 px-3 text-xs"
+              >
+                <IconStop size={12} className="mr-1" />
+                中断
+              </Button>
+            ) : null}
             <Button
               onClick={handleSend}
               disabled={disabled || !value.trim()}
               size="sm"
-              className="shrink-0 h-8 px-3 text-xs shadow-glow"
+              className="h-8 px-3 text-xs shadow-glow"
             >
               <IconSend size={12} className="mr-1" />
-              发送
+              {isStreaming ? '加入队列' : '发送'}
             </Button>
-          )}
+          </div>
         </div>
 
-        {/* 绱у噾鐘舵€佹爮 - 浠呭湪蹇呰鏃舵樉绀?*/}
+        {/* 紧凑状态栏 - 仅在必要时显示 */}
         {(suggestionMode || value.length > 0) && (
           <div className="flex items-center justify-between mt-1.5 px-1">
             <div className="text-xs text-text-tertiary">

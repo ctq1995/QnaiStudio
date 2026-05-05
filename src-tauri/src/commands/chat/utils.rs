@@ -1,6 +1,7 @@
 use crate::models::events::StreamEvent;
 use crate::utils::encoding::decode_cli_output;
-use std::collections::HashMap;
+use crate::SessionRuntime;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Window};
 
@@ -35,16 +36,72 @@ pub fn emit_stream_event(window: &Window, event: &StreamEvent, session_id: &str)
     emit_chat_event(window, payload, session_id);
 }
 
+pub fn register_session_runtime(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    session_id: &str,
+    pid: u32,
+) {
+    if let Ok(mut sessions) = sessions.lock() {
+        let mut aliases = HashSet::new();
+        aliases.insert(session_id.to_string());
+        sessions.insert(
+            session_id.to_string(),
+            SessionRuntime {
+                canonical_id: session_id.to_string(),
+                pid,
+                aliases,
+            },
+        );
+    }
+}
+
 pub fn update_session_mapping(
-    sessions: &Arc<Mutex<HashMap<String, u32>>>,
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
     old_id: &str,
     new_id: &str,
 ) -> Option<u32> {
     let mut sessions = sessions.lock().ok()?;
-    let pid = *sessions.get(old_id)?;
-    sessions.remove(old_id);
-    sessions.insert(new_id.to_string(), pid);
+    let runtime = sessions.get(old_id)?.clone();
+    let canonical_before = runtime.canonical_id.clone();
+    let pid = runtime.pid;
+
+    let mut aliases = runtime.aliases.clone();
+    aliases.insert(old_id.to_string());
+    aliases.insert(new_id.to_string());
+
+    let updated = SessionRuntime {
+        canonical_id: new_id.to_string(),
+        pid,
+        aliases: aliases.clone(),
+    };
+
+    for alias in &aliases {
+        sessions.insert(alias.clone(), updated.clone());
+    }
+    if canonical_before != new_id {
+        sessions.insert(new_id.to_string(), updated);
+    }
     Some(pid)
+}
+
+pub fn resolve_session_pid(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    session_id: &str,
+) -> Option<u32> {
+    let sessions = sessions.lock().ok()?;
+    sessions.get(session_id).map(|runtime| runtime.pid)
+}
+
+pub fn remove_session_runtime(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    session_id: &str,
+) -> Option<SessionRuntime> {
+    let mut sessions = sessions.lock().ok()?;
+    let runtime = sessions.get(session_id)?.clone();
+    for alias in &runtime.aliases {
+        sessions.remove(alias);
+    }
+    Some(runtime)
 }
 
 pub fn terminate_process(pid: u32) {

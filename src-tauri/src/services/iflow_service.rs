@@ -193,17 +193,13 @@ impl IFlowService {
 
     /// 将 IFlow 配置中的 API 参数注入为环境变量
     fn apply_engine_env(cmd: &mut Command, config: &Config) {
-        if let Some(ref api_key) = config.iflow.api_key {
-            if !api_key.is_empty() {
-                cmd.env_remove("IFLOW_API_KEY");
-                cmd.env("IFLOW_API_KEY", api_key);
-            }
+        if let Some(api_key) = config.resolve_iflow_api_key() {
+            cmd.env_remove("IFLOW_API_KEY");
+            cmd.env("IFLOW_API_KEY", api_key);
         }
-        if let Some(ref base_url) = config.iflow.base_url {
-            if !base_url.is_empty() {
-                cmd.env_remove("IFLOW_BASE_URL");
-                cmd.env("IFLOW_BASE_URL", base_url);
-            }
+        if let Some(base_url) = config.resolve_iflow_base_url() {
+            cmd.env_remove("IFLOW_BASE_URL");
+            cmd.env("IFLOW_BASE_URL", base_url);
         }
         if let Some(ref model) = config.iflow.model {
             if !model.is_empty() {
@@ -306,7 +302,7 @@ impl IFlowService {
                         // 转换并发送事件（可能返回多个事件）
                         let stream_events = iflow_event.to_stream_events();
                         for stream_event in stream_events {
-                            let is_session_end = matches!(stream_event, StreamEvent::SessionEnd);
+                            let is_session_end = matches!(stream_event, StreamEvent::SessionEnd { .. });
                             callback(stream_event);
 
                             // 如果检测到会话结束，退出

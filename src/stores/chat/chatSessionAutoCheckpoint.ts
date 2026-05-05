@@ -1,6 +1,7 @@
 import { createWorkspaceVersion } from '../../services/workspaceVersionService';
 import { extractErrorMessage } from './chatEventUtils';
-import { useChatMessageStore } from './chatMessageStore';
+import { useVersioningStore } from '../versioningStore';
+import { useErrorCenterStore } from '../errorCenterStore';
 
 const AUTO_CHECKPOINT_LABEL_PREVIEW_LENGTH = 60;
 const AUTO_CHECKPOINT_LABEL_PREFIX = 'AI 自动快照: ';
@@ -23,17 +24,17 @@ export function buildAutoCheckpointLabel(content: string): string | undefined {
 }
 
 function clearProgressIfCurrent(expected: string) {
-  const store = useChatMessageStore.getState();
-  if (store.progressMessage === expected) {
-    store.setProgressMessage(null);
+  const store = useVersioningStore.getState();
+  if (store.operationStatus === 'auto-checkpoint' && store.operationMessage === expected) {
+    store.finishOperation();
   }
 }
 
 export function scheduleAutoCheckpoint(options: { workspacePath: string; label?: string }) {
   const { workspacePath, label } = options;
-  const store = useChatMessageStore.getState();
+  const versioningStore = useVersioningStore.getState();
 
-  store.setProgressMessage(AUTO_CHECKPOINT_PROGRESS_MESSAGE);
+  versioningStore.beginOperation('auto-checkpoint', AUTO_CHECKPOINT_PROGRESS_MESSAGE);
 
   window.setTimeout(() => {
     createWorkspaceVersion({ workspacePath, kind: 'auto', label })
@@ -41,7 +42,15 @@ export function scheduleAutoCheckpoint(options: { workspacePath: string; label?:
         clearProgressIfCurrent(AUTO_CHECKPOINT_PROGRESS_MESSAGE);
       })
       .catch((error) => {
-        store.addErrorMessage(extractErrorMessage(error, '自动快照失败'));
+        const errorMessage = extractErrorMessage(error, '自动快照失败');
+        useErrorCenterStore.getState().pushError({
+          scope: 'versioning',
+          level: 'error',
+          title: '自动快照失败',
+          message: errorMessage,
+          source: 'chatSessionAutoCheckpoint.scheduleAutoCheckpoint',
+        });
+        useVersioningStore.getState().failOperation(errorMessage);
         clearProgressIfCurrent(AUTO_CHECKPOINT_PROGRESS_MESSAGE);
       });
   }, AUTO_CHECKPOINT_START_DELAY_MS);

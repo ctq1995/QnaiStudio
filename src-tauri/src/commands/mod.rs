@@ -5,6 +5,7 @@ pub mod file_explorer;
 pub mod window;
 pub mod context;
 pub mod versioning;
+pub mod logging;
 pub mod models;
 
 pub use ai_log::append_ai_log;

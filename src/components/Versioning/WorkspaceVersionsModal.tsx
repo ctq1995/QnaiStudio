@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ConfirmDialog } from '../Common';
 import type { WorkspaceVersion } from '../../types';
 import { useEventChatStore, useFileEditorStore, useFileExplorerStore, useVersioningStore } from '../../stores';
+import { useToolPanelStore } from '../../stores/toolPanelStore';
 import {
+  checkRestoreWorkspaceVersion,
   createWorkspaceVersion,
   deleteWorkspaceVersion,
   listWorkspaceVersions,
@@ -18,6 +21,7 @@ interface ConfirmState {
   title: string;
   message: string;
   confirmText: string;
+  cancelText?: string;
   danger?: boolean;
   onConfirm: () => Promise<void>;
 }
@@ -30,17 +34,40 @@ function kindLabel(kind: WorkspaceVersion['kind']): string {
   return kind === 'auto' ? '自动' : '手动';
 }
 
+function formatVersionSize(totalSize: number): string {
+  if (totalSize < 1024) return `${totalSize} B`;
+  if (totalSize < 1024 * 1024) return `${(totalSize / 1024).toFixed(1)} KB`;
+  if (totalSize < 1024 * 1024 * 1024) return `${(totalSize / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(totalSize / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }: WorkspaceVersionsModalProps) {
   const isStreaming = useEventChatStore((state) => state.isStreaming);
-  const { autoCheckpointEnabled, setAutoCheckpointEnabled } = useVersioningStore();
+  const pendingQueue = useEventChatStore((state) => state.pendingQueue);
+  const clearPendingQueue = useEventChatStore((state) => state.clearPendingQueue);
+  const hasUnsavedChanges = useFileEditorStore((state) => state.hasUnsavedChanges);
+  const discardCurrentFile = useFileEditorStore((state) => state.discardCurrentFile);
+  const {
+    autoCheckpointEnabled,
+    setAutoCheckpointEnabled,
+    operationStatus,
+    operationMessage,
+    lastRestoreNotice,
+    beginOperation,
+    finishOperation,
+    failOperation,
+    setLastRestoreNotice,
+  } = useVersioningStore();
 
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
-  const [status, setStatus] = useState<'idle' | 'loading' | 'creating' | 'restoring' | 'deleting'>('idle');
+  const [status, setStatus] = useState<'idle' | 'loading'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [labelInput, setLabelInput] = useState('');
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
 
-  const canOperate = !isStreaming && status === 'idle';
+  const hasQueuedWork = pendingQueue.length > 0;
+  const isVersionBusy = operationStatus !== 'idle';
+  const canOperate = !isStreaming && !hasQueuedWork && !isVersionBusy && status === 'idle';
 
   const refresh = useCallback(async () => {
     setStatus('loading');
@@ -63,8 +90,8 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
 
   const handleCreate = useCallback(async () => {
     if (!canOperate) return;
-    setStatus('creating');
     setError(null);
+    beginOperation('creating', '正在创建版本快照…');
     try {
       await createWorkspaceVersion({
         workspacePath,
@@ -73,50 +100,95 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
       });
       setLabelInput('');
       await refresh();
+      finishOperation();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '提交版本失败');
-      setStatus('idle');
+      const message = e instanceof Error ? e.message : '提交版本失败';
+      setError(message);
+      failOperation(message);
     }
-  }, [canOperate, labelInput, refresh, workspacePath]);
+  }, [beginOperation, canOperate, failOperation, finishOperation, labelInput, refresh, workspacePath]);
 
   const doRestore = useCallback(
     async (versionId: string) => {
-      setStatus('restoring');
+      beginOperation('restoring', '正在恢复工作区版本…');
       setError(null);
 
       await restoreWorkspaceVersion({ workspacePath, versionId });
-      await useFileExplorerStore.getState().refresh_directory();
-      useFileEditorStore.getState().closeFile();
-      setStatus('idle');
+
+      clearPendingQueue();
+      useToolPanelStore.getState().clearTools();
+      discardCurrentFile();
+
+      let refreshError: string | null = null;
+      try {
+        await useFileExplorerStore.getState().refresh_directory();
+      } catch (e) {
+        refreshError = e instanceof Error ? e.message : '文件树刷新失败';
+      }
+
+      const restoreNotice = refreshError
+        ? `工作区已恢复到目标版本，但后续界面刷新未完全成功：${refreshError}`
+        : '工作区已恢复到目标版本，已清空待发送队列并重置工具面板。';
+
+      setLastRestoreNotice(restoreNotice);
+      finishOperation();
       onClose();
     },
-    [onClose, workspacePath],
+    [beginOperation, clearPendingQueue, discardCurrentFile, finishOperation, onClose, setLastRestoreNotice, workspacePath],
   );
 
   const handleRestore = useCallback(
-    (version: WorkspaceVersion) => {
+    async (version: WorkspaceVersion) => {
       if (!canOperate) return;
-      setConfirm({
-        title: '回退版本',
-        message: `将工作区回退到“${version.label}”（${formatVersionTime(version)}）。\n\n该操作会覆盖当前文件，并删除快照中不存在的新增文件。`,
-        confirmText: '确认回退',
-        danger: true,
-        onConfirm: async () => doRestore(version.id),
-      });
+      setError(null);
+      try {
+        const check = await checkRestoreWorkspaceVersion({ workspacePath, versionId: version.id });
+        const warnings: string[] = [];
+        if (check.missingObjects > 0) {
+          warnings.push(`检测到 ${check.missingObjects} 个对象缺失，当前版本可能无法恢复。`);
+        }
+        if (!check.hasBackupCapacity) {
+          warnings.push('当前工作区与目标快照总体积较大，恢复时可能没有足够空间用于临时备份。');
+        }
+
+        const restoreMessage = `将工作区回退到“${version.label}”（${formatVersionTime(version)}）。\n\n快照文件数：${check.fileCount}\n快照体积：${formatVersionSize(check.totalSize)}\n\n该操作会安全恢复当前工作区到该增量快照状态，并移除该版本中不存在的新增文件。恢复失败时会自动尝试回滚。${warnings.length ? `\n\n预检查警告：\n- ${warnings.join('\n- ')}` : ''}`;
+
+        if (hasUnsavedChanges()) {
+          setConfirm({
+            title: '先处理未保存文件',
+            message: `当前编辑器存在未保存改动。若继续恢复版本，未保存内容将被丢弃。\n\n${restoreMessage}`,
+            confirmText: '放弃改动并回退',
+            cancelText: '继续编辑',
+            danger: true,
+            onConfirm: async () => doRestore(version.id),
+          });
+          return;
+        }
+
+        setConfirm({
+          title: '回退版本',
+          message: restoreMessage,
+          confirmText: '确认回退',
+          danger: true,
+          onConfirm: async () => doRestore(version.id),
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : '恢复前预检查失败');
+      }
     },
-    [canOperate, doRestore],
+    [canOperate, doRestore, hasUnsavedChanges, workspacePath],
   );
 
   const doDelete = useCallback(
     async (versionId: string) => {
-      setStatus('deleting');
+      beginOperation('deleting', '正在删除版本…');
       setError(null);
 
       await deleteWorkspaceVersion({ workspacePath, versionId });
       await refresh();
-      setStatus('idle');
+      finishOperation();
     },
-    [refresh, workspacePath],
+    [beginOperation, finishOperation, refresh, workspacePath],
   );
 
   const handleDelete = useCallback(
@@ -141,11 +213,12 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
       await confirm.onConfirm();
       setConfirm(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : '操作失败');
-      setStatus('idle');
+      const message = e instanceof Error ? e.message : '操作失败';
+      setError(message);
+      failOperation(message);
       setConfirm(null);
     }
-  }, [confirm]);
+  }, [confirm, failOperation]);
 
   return (
     <>
@@ -165,9 +238,19 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
         </div>
 
         <div className="px-5 py-4">
-          {isStreaming && (
+          {(isStreaming || hasQueuedWork || isVersionBusy) && (
             <div className="mb-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-              AI 正在运行中，已禁用版本操作。
+              {isStreaming
+                ? 'AI 正在运行中，已禁用版本操作。'
+                : hasQueuedWork
+                  ? '存在待发送队列，已禁用版本操作。'
+                  : operationMessage || '版本操作进行中，已暂时禁用其它版本操作。'}
+            </div>
+          )}
+
+          {lastRestoreNotice && !error && (
+            <div className="mb-3 rounded-lg border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+              {lastRestoreNotice}
             </div>
           )}
 
@@ -230,6 +313,9 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-text-tertiary">{formatVersionTime(v)}</div>
+                      <div className="mt-1 text-[11px] text-text-tertiary">
+                        {v.fileCount} 个文件 · {formatVersionSize(v.totalSize)} · {v.status === 'ready' ? '可恢复' : '异常'}
+                      </div>
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
@@ -255,38 +341,22 @@ export function WorkspaceVersionsModal({ workspaceName, workspacePath, onClose }
           </div>
 
           <div className="mt-2 text-xs text-text-tertiary">
-            快照默认忽略目录：.git、node_modules、target、dist、.next、.turbo。
+            版本采用文件级增量快照，默认忽略：.git、node_modules、target、dist、.next、.turbo、.bitfun、.tmp、coverage、.cache、.idea。
           </div>
         </div>
       </div>
 
-      {confirm && (
-        <>
-          <div className="fixed inset-0 z-[2002] bg-black/60" onClick={closeConfirm} />
-          <div className="fixed left-1/2 top-1/2 z-[2003] w-[420px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-background-elevated p-5 shadow-xl">
-            <div className="text-base font-semibold text-text-primary">{confirm.title}</div>
-            <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-text-secondary">{confirm.message}</div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                onClick={closeConfirm}
-                className="rounded-lg px-3 py-1.5 text-sm text-text-secondary hover:bg-background-hover hover:text-text-primary"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleConfirm}
-                className={
-                  confirm.danger
-                    ? 'rounded-lg bg-danger px-3 py-1.5 text-sm text-white hover:bg-danger-hover'
-                    : 'rounded-lg bg-primary px-3 py-1.5 text-sm text-white hover:bg-primary-hover'
-                }
-              >
-                {confirm.confirmText}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
+      <ConfirmDialog
+        open={Boolean(confirm)}
+        title={confirm?.title ?? ''}
+        message={confirm?.message ?? ''}
+        confirmText={confirm?.confirmText ?? '确认'}
+        cancelText={confirm?.cancelText ?? '取消'}
+        tone={confirm?.danger ? 'danger' : 'primary'}
+        onCancel={closeConfirm}
+        onConfirm={handleConfirm}
+        zIndexClassName="z-[2003]"
+      />
     </>
   );
 }

@@ -50,6 +50,17 @@ function getLanguageFromPath(path: string): string {
   return languageMap[ext || ''] || 'text';
 }
 
+function resetEditorState() {
+  useViewStore.getState().setShowEditor(false);
+
+  return {
+    isOpen: false,
+    currentFile: null,
+    status: 'idle' as const,
+    error: null,
+  };
+}
+
 export const useFileEditorStore = create<FileEditorStore>((set, get) => ({
   // 初始状态
   isOpen: false,
@@ -95,18 +106,16 @@ export const useFileEditorStore = create<FileEditorStore>((set, get) => ({
 
   // 关闭文件
   closeFile: () => {
+    set(resetEditorState());
+  },
+
+  hasUnsavedChanges: () => {
     const { currentFile } = get();
-    if (currentFile?.isModified) {
-      // TODO: 显示未保存提示
-    }
-    set({
-      isOpen: false,
-      currentFile: null,
-      status: 'idle',
-      error: null,
-    });
-    // 自动隐藏编辑器
-    useViewStore.getState().setShowEditor(false);
+    return Boolean(currentFile?.isModified);
+  },
+
+  discardCurrentFile: () => {
+    set(resetEditorState());
   },
 
   // 更新内容

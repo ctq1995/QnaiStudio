@@ -257,7 +257,12 @@ export class IFlowEventParser extends BaseEventParser<IFlowStreamEvent> {
    * 解析错误事件
    */
   private parseErrorEvent(event: IFlowErrorEvent): AIEvent {
-    return createErrorEvent(event.error || event.message || '未知错误')
+    const errorMsg = (event.error || event.message || '未知错误').trim()
+    const reconnectMatch = errorMsg.match(/^Reconnecting\.\.\.\s*(\d+\/\d+)/i)
+    if (reconnectMatch) {
+      return createProgressEvent(`连接中断，正在重连 ${reconnectMatch[1]}`)
+    }
+    return createErrorEvent(errorMsg)
   }
 }
 

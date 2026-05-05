@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 use std::io;
-use tauri::State;
-
 use crate::error::{AppError, Result};
 use crate::services::logger;
-use crate::services::config_store::ConfigStore;
-use crate::AppState;
 
 /// 获取日志目录
 #[tauri::command]
@@ -49,27 +45,4 @@ pub fn open_log_dir() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// 设置日志开关
-#[tauri::command]
-pub fn set_logging_enabled(enabled: bool, state: State<AppState>) -> Result<()> {
-    let store = state.config_store.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    let mut config = store.get().clone();
-    config.enable_logging = enabled;
-
-    drop(store);
-    let mut store = state.config_store.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    store.update(config)
-}
-
-/// 获取日志开关状态
-#[tauri::command]
-pub fn is_logging_enabled(state: State<AppState>) -> bool {
-    state.config_store.lock()
-        .as_ref()
-        .map(|store| store.enable_logging())
-        .unwrap_or(false)
 }

@@ -4,14 +4,18 @@ use crate::models::events::StreamEvent;
 use std::sync::Arc;
 
 use crate::commands::chat::session::{
-    build_claude_command, ChatSession, ClaudeCommandArgs, ClaudeStartParams,
+    build_claude_command, ChatSession, ClaudeCommandArgs, ClaudeOutputMode, ClaudeStartParams,
 };
-use crate::commands::chat::utils::{emit_stream_event, terminate_process, update_session_mapping};
+use crate::commands::chat::utils::{
+    emit_stream_event, register_session_runtime, remove_session_runtime, resolve_session_pid,
+    terminate_process, update_session_mapping,
+};
+use crate::SessionRuntime;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub async fn start_claude_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Result<String> {
-    let session = ChatSession::start(ClaudeStartParams {
+    let mut session = ChatSession::start(ClaudeStartParams {
         config: &ctx.config,
         message: &args.message,
         system_prompt: args.system_prompt.as_deref(),
@@ -20,19 +24,27 @@ pub async fn start_claude_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> R
 
     let session_id = session.id.clone();
     let pid = session.child.id();
-    store_session_pid(&ctx.state.sessions, &session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &session_id, pid);
+
+    if let Some(stdin) = session.child.stdin.take() {
+        if let Ok(mut handles) = ctx.state.stdin_handles.lock() {
+            handles.insert(session_id.clone(), stdin);
+        }
+    }
+
     spawn_claude_reader(ClaudeReaderArgs {
         session,
         window: ctx.window.clone(),
         sessions: Arc::clone(&ctx.state.sessions),
+        stdin_handles: Arc::clone(&ctx.state.stdin_handles),
         initial_session_id: session_id.clone(),
     });
     Ok(session_id)
 }
 
 pub async fn continue_claude_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs) -> Result<()> {
-    terminate_existing_session(&ctx.state.sessions, &args.session_id);
-    let child = spawn_claude_process(ClaudeProcessArgs {
+    terminate_existing_session(&ctx.state.sessions, &ctx.state.stdin_handles, &args.session_id);
+    let mut child = spawn_claude_process(ClaudeProcessArgs {
         config: &ctx.config,
         message: &args.message,
         system_prompt: args.system_prompt.as_deref(),
@@ -40,12 +52,20 @@ pub async fn continue_claude_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     })?;
 
     let pid = child.id();
-    store_session_pid(&ctx.state.sessions, &args.session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
+
+    if let Some(stdin) = child.stdin.take() {
+        if let Ok(mut handles) = ctx.state.stdin_handles.lock() {
+            handles.insert(args.session_id.clone(), stdin);
+        }
+    }
+
     let session = ChatSession::with_id_and_child(args.session_id.clone(), child);
     spawn_claude_reader(ClaudeReaderArgs {
         session,
         window: ctx.window.clone(),
         sessions: Arc::clone(&ctx.state.sessions),
+        stdin_handles: Arc::clone(&ctx.state.stdin_handles),
         initial_session_id: args.session_id.clone(),
     });
     Ok(())
@@ -61,7 +81,8 @@ struct ClaudeProcessArgs<'a> {
 struct ClaudeReaderArgs {
     session: ChatSession,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    stdin_handles: Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
     initial_session_id: String,
 }
 
@@ -71,6 +92,7 @@ fn spawn_claude_process(args: ClaudeProcessArgs<'_>) -> Result<std::process::Chi
         message: args.message,
         system_prompt: args.system_prompt,
         resume_session_id: args.resume_session_id,
+        output_mode: ClaudeOutputMode::StreamJson,
     })?;
     cmd.spawn()
         .map_err(|e| AppError::ProcessError(format!("继续 Claude 失败: {}", e)))
@@ -78,7 +100,7 @@ fn spawn_claude_process(args: ClaudeProcessArgs<'_>) -> Result<std::process::Chi
 
 fn spawn_claude_reader(args: ClaudeReaderArgs) {
     std::thread::spawn(move || {
-        let mut state = ClaudeEventState::new(args.sessions, args.initial_session_id);
+        let mut state = ClaudeEventState::new(args.sessions, args.stdin_handles, args.initial_session_id);
         args.session.read_events(move |event| {
             state.update_session_id(&event);
             state.emit_event(&args.window, &event);
@@ -87,40 +109,38 @@ fn spawn_claude_reader(args: ClaudeReaderArgs) {
     });
 }
 
-fn store_session_pid(
-    sessions: &Arc<Mutex<HashMap<String, u32>>>,
+
+fn terminate_existing_session(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    stdin_handles: &Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
     session_id: &str,
-    pid: u32,
-) -> Result<()> {
-    let mut sessions = sessions.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    sessions.insert(session_id.to_string(), pid);
-    Ok(())
-}
-
-fn remove_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    if let Ok(mut sessions) = sessions.lock() {
-        sessions.remove(session_id);
+) {
+    let pid_opt = resolve_session_pid(sessions, session_id);
+    let _ = remove_session_runtime(sessions, session_id);
+    if let Ok(mut handles) = stdin_handles.lock() {
+        handles.remove(session_id);
     }
-}
-
-fn terminate_existing_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    let pid_opt = sessions.lock().ok().and_then(|mut sessions| sessions.remove(session_id));
     if let Some(pid) = pid_opt {
         terminate_process(pid);
     }
 }
 
 struct ClaudeEventState {
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
+    stdin_handles: Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
     temp_session_id: String,
     emit_session_id: String,
 }
 
 impl ClaudeEventState {
-    fn new(sessions: Arc<Mutex<HashMap<String, u32>>>, temp_session_id: String) -> Self {
+    fn new(
+        sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
+        stdin_handles: Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
+        temp_session_id: String,
+    ) -> Self {
         Self {
             sessions,
+            stdin_handles,
             emit_session_id: temp_session_id.clone(),
             temp_session_id,
         }
@@ -144,6 +164,11 @@ impl ClaudeEventState {
         }
 
         if update_session_mapping(&self.sessions, &self.temp_session_id, &new_id).is_some() {
+            if let Ok(mut handles) = self.stdin_handles.lock() {
+                if let Some(stdin) = handles.remove(&self.temp_session_id) {
+                    handles.insert(new_id.clone(), stdin);
+                }
+            }
             self.emit_session_id = new_id;
         }
     }
@@ -153,8 +178,14 @@ impl ClaudeEventState {
     }
 
     fn maybe_cleanup(&self, event: &StreamEvent) {
-        if matches!(event, StreamEvent::SessionEnd) {
-            remove_session(&self.sessions, &self.emit_session_id);
+        if matches!(event, StreamEvent::SessionEnd { .. }) {
+            let _ = remove_session_runtime(&self.sessions, &self.emit_session_id);
+            if let Ok(mut handles) = self.stdin_handles.lock() {
+                handles.remove(&self.emit_session_id);
+                if self.emit_session_id != self.temp_session_id {
+                    handles.remove(&self.temp_session_id);
+                }
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Layout, SettingsModal, FileExplorer, ResizeHandle, ConnectingOverlay, ErrorBoundary } from './components/Common';
+import { Layout, FileExplorer, ResizeHandle, ConnectingOverlay, ErrorBoundary } from './components/Common';
+import { SettingsPage } from './components/Settings/SettingsPage';
 import { KeyboardShortcutsModal } from './components/Common/KeyboardShortcutsModal';
 import { EnhancedChatMessages, ChatInput } from './components/Chat';
 import { ToolPanel } from './components/ToolPanel';
@@ -8,12 +9,15 @@ import { DeveloperPanel } from './components/Developer';
 import { TopMenuBar as TopMenuBarComponent } from './components/TopMenuBar';
 import { CreateWorkspaceModal } from './components/Workspace';
 import { SessionHistoryPanel } from './components/Chat/SessionHistoryPanel';
-import { useConfigStore, useEventChatStore, useViewStore, useWorkspaceStore, useFloatingWindowStore } from './stores';
+import { AppStatusBar } from './components/StatusBar';
+import { WorkspaceVersionsModal } from './components/Versioning/WorkspaceVersionsModal';
+import { useConfigStore, useEventChatStore, useViewStore, useWorkspaceStore, useFloatingWindowStore, useChatMessageStore } from './stores';
+import type { ChatMessageState } from './stores/chat/chatMessageStore';
 import { TabBar } from './components/Chat/TabBar';
 import * as tauri from './services/tauri';
 import { bootstrapEngines } from './core/engine-bootstrap';
 import { getEngineAvailability, getEngineVersion } from './types';
-import { ENGINE_VERSION_PREFIX_MAP, formatEngineVersionLabel, getEngineLabel } from './utils/engineLabels';
+import { getEngineLabel } from './utils/engineLabels';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWorkspaceById } from './utils/workspaceScope';
@@ -36,9 +40,11 @@ function App() {
     [currentWorkspaceId, workspaces],
   );
   const currentWorkspacePath = currentWorkspace?.path;
+  const activeModelLabel = useChatMessageStore((state: ChatMessageState) => state.activeModelLabel);
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
   const [workspacesHydrated, setWorkspacesHydrated] = useState(
     () => useWorkspaceStore.persist?.hasHydrated?.() ?? true,
   );
@@ -95,19 +101,34 @@ function App() {
   const currentEngineVersion = healthStatus
     ? getEngineVersion(healthStatus, currentEngine)
     : '未知版本';
-  const engineVersionLabel = formatEngineVersionLabel({
-    engineId: currentEngine,
-    engineLabel: currentEngineLabel,
-    version: currentEngineVersion,
-    prefixMap: ENGINE_VERSION_PREFIX_MAP,
-  });
-  const engineStatus = connectionState === 'failed'
-    ? 'error'
-    : isConnecting
-      ? 'loading'
-      : isCurrentEngineAvailable
-        ? 'online'
-        : 'offline';
+  const currentEngineBinding = useMemo(() => {
+    if (!config) return null;
+
+    switch (currentEngine) {
+      case 'iflow':
+        return config.iflow;
+      case 'codex-cli':
+        return config.codexCli;
+      case 'gemini':
+        return config.gemini;
+      case 'claude-code':
+      default:
+        return config.claudeCode;
+    }
+  }, [config, currentEngine]);
+
+  const currentProvider = useMemo(() => {
+    if (!config || !currentEngineBinding?.providerId) return null;
+    return config.providers.find((provider) => provider.id === currentEngineBinding.providerId) ?? null;
+  }, [config, currentEngineBinding]);
+
+  const currentEngineEndpoint = useMemo(() => {
+    return currentProvider?.baseUrl ?? currentEngineBinding?.baseUrl ?? null;
+  }, [currentEngineBinding, currentProvider]);
+
+  const currentEngineModel = useMemo(() => {
+    return currentEngineBinding?.model?.trim() || null;
+  }, [currentEngineBinding]);
 
   // 初始化配置（只执行一次）
   useEffect(() => {
@@ -269,6 +290,7 @@ function App() {
     eventListenersCleanupRef.current = cleanup;
     return () => {
       if (cleanup) cleanup();
+      eventListenersCleanupRef.current = null;
     };
   }, [initializeEventListeners]);
 
@@ -441,105 +463,124 @@ function App() {
   return (
     <ErrorBoundary>
       <Layout>
-        {(isConnecting || connectionState === 'failed') && <ConnectingOverlay />}
+        {showSettings ? (
+          <SettingsPage
+            onClose={() => setShowSettings(false)}
+            theme={theme}
+            onThemeChange={(t) => {
+              const vs = useViewStore.getState();
+              if (vs.theme !== t) vs.toggleTheme();
+            }}
+          />
+        ) : (
+          <>
+            {(isConnecting || connectionState === 'failed') && <ConnectingOverlay />}
 
-        <TopMenuBarComponent
-          onNewConversation={() => {
-            useEventChatStore.getState().clearMessages();
-          }}
-          onSettings={() => setShowSettings(true)}
-          onCreateWorkspace={() => setShowCreateWorkspace(true)}
-          onToggleTheme={toggleTheme}
-          theme={theme}
-          engineLabel={currentEngineLabel}
-          engineVersion={engineVersionLabel}
-          engineStatus={engineStatus}
-        />
+            <TopMenuBarComponent
+              onNewConversation={() => {
+                useEventChatStore.getState().clearMessages();
+              }}
+              onSettings={() => setShowSettings(true)}
+              onOpenVersions={() => setShowVersions(true)}
+              onCreateWorkspace={() => setShowCreateWorkspace(true)}
+              onToggleTheme={toggleTheme}
+              theme={theme}
+            />
 
-        <div className="flex-1 overflow-hidden px-3 pb-3">
-          <div className="flex h-full gap-3 overflow-hidden">
-            {showSidebar && (
-              <>
-                <div
-                  className="rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
-                  style={{ width: sidebarWidth }}
-                >
-                  <FileExplorer onCreateWorkspace={() => setShowCreateWorkspace(true)} />
+            <div className="flex-1 overflow-hidden px-3 pb-2">
+              <div className="flex h-full gap-3 overflow-hidden">
+                {showSidebar && (
+                  <>
+                    <div
+                      className="rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
+                      style={{ width: sidebarWidth }}
+                    >
+                      <FileExplorer onCreateWorkspace={() => setShowCreateWorkspace(true)} />
+                    </div>
+                    <ResizeHandle
+                      direction="horizontal"
+                      position="right"
+                      onDrag={handleSidebarResize}
+                    />
+                  </>
+                )}
+
+                <div className="flex min-w-0 flex-1 gap-3 overflow-hidden">
+                  {showEditor && (
+                    <div
+                      className="flex min-w-[320px] flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
+                      style={{ width: editorWidth + '%' }}
+                    >
+                      <EditorPanel />
+                    </div>
+                  )}
+
+                  {showEditor && (
+                    <ResizeHandle
+                      direction="horizontal"
+                      position="right"
+                      onDrag={handleEditorResize}
+                    />
+                  )}
+
+                  <div className="flex min-w-[320px] flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft">
+                    <TabBar />
+                    <EnhancedChatMessages />
+
+                    <div className="border-t border-border bg-background-base/40">
+                      <ChatInput
+                        onSend={sendMessage}
+                        onInterrupt={interruptChat}
+                        disabled={!isCurrentEngineAvailable || !currentWorkspace}
+                        isStreaming={isStreaming}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <ResizeHandle
-                  direction="horizontal"
-                  position="right"
-                  onDrag={handleSidebarResize}
-                />
-              </>
-            )}
 
-            <div className="flex min-w-0 flex-1 gap-3 overflow-hidden">
-              {showEditor && (
-                <div
-                  className="flex min-w-[320px] flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft"
-                  style={{ width: editorWidth + '%' }}
-                >
-                  <EditorPanel />
-                </div>
-              )}
-
-              {showEditor && (
-                <ResizeHandle
-                  direction="horizontal"
-                  position="right"
-                  onDrag={handleEditorResize}
-                />
-              )}
-
-              <div className="flex min-w-[320px] flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-background-elevated/80 shadow-soft">
-                <TabBar />
-                <EnhancedChatMessages />
-
-                <div className="border-t border-border bg-background-base/40">
-                  <ChatInput
-                    onSend={sendMessage}
-                    onInterrupt={interruptChat}
-                    disabled={!isCurrentEngineAvailable || !currentWorkspace}
-                    isStreaming={isStreaming}
+                {showToolPanel && (
+                  <ResizeHandle
+                    direction="horizontal"
+                    position="left"
+                    onDrag={handleToolPanelResize}
                   />
-                </div>
+                )}
+
+                {showToolPanel && (
+                  <ToolPanel
+                    width={toolPanelWidth}
+                    className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
+                  />
+                )}
+
+                {showDeveloperPanel && (
+                  <ResizeHandle
+                    direction="horizontal"
+                    position="left"
+                    onDrag={handleDeveloperPanelResize}
+                  />
+                )}
+
+                {showDeveloperPanel && (
+                  <DeveloperPanel
+                    width={developerPanelWidth}
+                    className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
+                  />
+                )}
               </div>
             </div>
 
-            {showToolPanel && (
-              <ResizeHandle
-                direction="horizontal"
-                position="left"
-                onDrag={handleToolPanelResize}
-              />
-            )}
+            <AppStatusBar
+              workspaceName={currentWorkspace?.name ?? '未选择工作区'}
+              workspacePath={currentWorkspace?.path ?? null}
+              engineLabel={currentEngineLabel}
+              engineVersion={currentEngineVersion}
+              endpoint={currentEngineEndpoint}
+              modelLabel={activeModelLabel?.trim() || currentEngineModel}
+            />
 
-            {showToolPanel && (
-              <ToolPanel
-                width={toolPanelWidth}
-                className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
-              />
-            )}
-
-            {showDeveloperPanel && (
-              <ResizeHandle
-                direction="horizontal"
-                position="left"
-                onDrag={handleDeveloperPanelResize}
-              />
-            )}
-
-            {showDeveloperPanel && (
-              <DeveloperPanel
-                width={developerPanelWidth}
-                className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
-              />
-            )}
-          </div>
-        </div>
-
-        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+          </>
+        )}
 
         {showCreateWorkspace && (
           <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />
@@ -547,6 +588,14 @@ function App() {
 
         {showShortcuts && (
           <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />
+        )}
+
+        {showVersions && currentWorkspace && (
+          <WorkspaceVersionsModal
+            workspaceName={currentWorkspace.name}
+            workspacePath={currentWorkspace.path}
+            onClose={() => setShowVersions(false)}
+          />
         )}
 
         {showSessionHistory && (

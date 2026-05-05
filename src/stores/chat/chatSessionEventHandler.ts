@@ -1,7 +1,8 @@
 import type { AIEvent } from '../../ai-runtime';
 import { useToolPanelStore } from '../toolPanelStore';
 import { useChatMessageStore } from './chatMessageStore';
-import type { ChatSessionState } from './chatSessionStore';
+import { useErrorCenterStore } from '../errorCenterStore';
+import { useChatSessionStore, type ChatSessionState } from './chatSessionStore';
 
 type SessionSet = (
   partial:
@@ -10,17 +11,29 @@ type SessionSet = (
 ) => void;
 
 function handleSessionStart(event: Extract<AIEvent, { type: 'session_start' }>, sessionSet: SessionSet) {
-  sessionSet({ conversationId: event.sessionId, isStreaming: true });
+  sessionSet({ conversationId: event.sessionId, isStreaming: true, interruptedLocally: false });
   console.log('[ChatSessionStore] Session started:', event.sessionId);
   useToolPanelStore.getState().clearTools();
 }
 
 function handleSessionEnd(event: Extract<AIEvent, { type: 'session_end' }>, sessionSet: SessionSet) {
   const msgStore = useChatMessageStore.getState();
+  const sessionStore = useChatSessionStore.getState();
+
+  if (sessionStore.interruptedLocally) {
+    sessionSet({ isStreaming: false, interruptedLocally: false });
+    msgStore.setRunStatus(null);
+    console.log('[ChatSessionStore] Session ended after local interrupt:', event.reason);
+    return;
+  }
 
   msgStore.finishMessage();
-  sessionSet({ isStreaming: false });
-  msgStore.setProgressMessage(null);
+  sessionStore.completeActiveQueueItem();
+  sessionSet({ isStreaming: false, interruptedLocally: false });
+  msgStore.setRunStatus(null);
+  queueMicrotask(() => {
+    void useChatSessionStore.getState().processNextQueuedMessage();
+  });
   console.log('[ChatSessionStore] Session ended:', event.reason);
 }
 
@@ -63,11 +76,70 @@ function handleToolCallOutput(event: Extract<AIEvent, { type: 'tool_call_output'
 }
 
 function handleProgress(event: Extract<AIEvent, { type: 'progress' }>) {
-  useChatMessageStore.getState().setProgressMessage(event.message || null);
+  const normalized = event.message?.trim() || null;
+  useChatMessageStore.getState().setRunStatus(
+    normalized
+      ? {
+          kind: 'running',
+          summary: normalized,
+          detail: null,
+          toolName: null,
+          updatedAt: new Date().toISOString(),
+          scope: 'session',
+        }
+      : null
+  );
+}
+
+function handlePermissionRequest(event: Extract<AIEvent, { type: 'permission_request' }>) {
+  useChatMessageStore.getState().appendPermissionBlock({
+    sessionId: event.sessionId,
+    engineId: event.engineId,
+    summary: event.summary,
+    responseHint: event.responseHint,
+    denials: event.denials.map((item) => ({
+      toolName: item.toolName,
+      reason: item.reason,
+      details: item.details ?? {},
+    })),
+    rawDetails: event.denials.map((item) => item.details ?? {}),
+  })
 }
 
 function handleError(event: Extract<AIEvent, { type: 'error' }>) {
-  useChatMessageStore.getState().addErrorMessage(event.error);
+  const normalizedError = event.error.trim();
+  const reconnectMatch = normalizedError.match(/^Reconnecting\.\.\.\s*(\d+\/\d+)/i);
+
+  if (reconnectMatch) {
+    const summary = `连接中断，正在重连 ${reconnectMatch[1]}`;
+    const msgStore = useChatMessageStore.getState();
+
+    msgStore.setRunStatus({
+      kind: 'reconnecting',
+      summary,
+      detail: normalizedError,
+      toolName: null,
+      updatedAt: new Date().toISOString(),
+      scope: 'session',
+    });
+
+    if (msgStore.currentMessage || [...msgStore.messages].reverse().some((message) => message.type === 'assistant')) {
+      msgStore.setInlineStatus({
+        kind: 'reconnecting',
+        summary,
+        detail: normalizedError,
+      });
+    }
+    return;
+  }
+
+  useErrorCenterStore.getState().pushError({
+    scope: 'chat',
+    level: 'error',
+    title: '会话运行错误',
+    message: normalizedError,
+    source: 'chatSessionEventHandler.handleError',
+  });
 }
 
 export function handleAIEvent(event: AIEvent, sessionSet: SessionSet): void {
@@ -96,6 +168,9 @@ export function handleAIEvent(event: AIEvent, sessionSet: SessionSet): void {
     case 'progress':
       handleProgress(event);
       return;
+    case 'permission_request':
+      handlePermissionRequest(event);
+      return;
     case 'error':
       handleError(event);
       return;
@@ -105,4 +180,3 @@ export function handleAIEvent(event: AIEvent, sessionSet: SessionSet): void {
       console.log('[ChatSessionStore] 未处理的 AIEvent 类型:', (event as { type: string }).type);
   }
 }
-

@@ -1,7 +1,11 @@
 use super::{ChatContext, ContinueChatArgs, StartChatArgs};
-use crate::commands::chat::utils::{emit_chat_event, terminate_process};
-use crate::error::{AppError, Result};
+use crate::commands::chat::utils::{
+    emit_chat_event, register_session_runtime, remove_session_runtime, resolve_session_pid,
+    terminate_process,
+};
+use crate::error::Result;
 use crate::services::gemini_service::GeminiService;
+use crate::SessionRuntime;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,7 +18,7 @@ pub async fn start_gemini_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> R
     let session_id = args.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let child = GeminiService::start_chat(&ctx.config, &args.message)?;
     let pid = child.id();
-    store_session_pid(&ctx.state.sessions, &session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &session_id, pid);
     spawn_gemini_reader(GeminiReaderArgs {
         child,
         session_id: session_id.clone(),
@@ -28,7 +32,7 @@ pub async fn continue_gemini_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     terminate_existing_session(&ctx.state.sessions, &args.session_id);
     let child = GeminiService::start_chat(&ctx.config, &args.message)?;
     let pid = child.id();
-    store_session_pid(&ctx.state.sessions, &args.session_id, pid)?;
+    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
     spawn_gemini_reader(GeminiReaderArgs {
         child,
         session_id: args.session_id.clone(),
@@ -42,14 +46,14 @@ struct GeminiReaderArgs {
     child: std::process::Child,
     session_id: String,
     window: tauri::Window,
-    sessions: Arc<Mutex<HashMap<String, u32>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
 }
 
 fn spawn_gemini_reader(args: GeminiReaderArgs) {
     std::thread::spawn(move || {
         GeminiService::read_events(args.child, move |event| {
             if is_session_end(&event) {
-                remove_session(&args.sessions, &args.session_id);
+                let _ = remove_session_runtime(&args.sessions, &args.session_id);
             }
             emit_chat_event(&args.window, event, &args.session_id);
         });
@@ -63,25 +67,12 @@ fn is_session_end(event: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn store_session_pid(
-    sessions: &Arc<Mutex<HashMap<String, u32>>>,
+fn terminate_existing_session(
+    sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
     session_id: &str,
-    pid: u32,
-) -> Result<()> {
-    let mut sessions = sessions.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    sessions.insert(session_id.to_string(), pid);
-    Ok(())
-}
-
-fn remove_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    if let Ok(mut sessions) = sessions.lock() {
-        sessions.remove(session_id);
-    }
-}
-
-fn terminate_existing_session(sessions: &Arc<Mutex<HashMap<String, u32>>>, session_id: &str) {
-    let pid_opt = sessions.lock().ok().and_then(|mut sessions| sessions.remove(session_id));
+) {
+    let pid_opt = resolve_session_pid(sessions, session_id);
+    let _ = remove_session_runtime(sessions, session_id);
     if let Some(pid) = pid_opt {
         terminate_process(pid);
     }

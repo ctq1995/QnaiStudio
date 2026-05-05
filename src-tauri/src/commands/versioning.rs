@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::services::workspace_versions::{
-    create_version, delete_version, list_versions, restore_version, WorkspaceVersion, WorkspaceVersionKind,
+    check_restore_version, create_version, delete_version, list_versions, restore_version,
+    RestoreWorkspaceVersionCheck, WorkspaceVersion, WorkspaceVersionKind,
 };
 use std::path::PathBuf;
 
@@ -28,6 +29,18 @@ pub async fn create_workspace_version(
         .await
         .map_err(join_error_to_app_error)??;
     Ok(version)
+}
+
+#[tauri::command]
+pub async fn check_restore_workspace_version(
+    workspace_path: String,
+    version_id: String,
+) -> Result<RestoreWorkspaceVersionCheck> {
+    let path = PathBuf::from(workspace_path);
+    let result = tokio::task::spawn_blocking(move || check_restore_version(&path, &version_id))
+        .await
+        .map_err(join_error_to_app_error)??;
+    Ok(result)
 }
 
 #[tauri::command]

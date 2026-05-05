@@ -1,22 +1,20 @@
 import { type ReactNode, useMemo, useState } from 'react';
-import { Clock3, Download, LayoutPanelLeft, Minimize, Moon, Plus, Settings2, Sun } from 'lucide-react';
+import { Clock3, Download, GitBranch, LayoutPanelLeft, Minimize, Moon, Plus, Settings2, Sun } from 'lucide-react';
 import { useConfigStore, useEventChatStore, useViewStore, useWorkspaceStore } from '../../stores';
 import { useFloatingWindowStore } from '../../stores/floatingWindowStore';
 import { exportToMarkdown, generateFileName } from '../../services/chatExport';
 import * as tauri from '../../services/tauri';
-import { BrandLogo, StatusIndicator } from '../Common';
+import { BrandLogo } from '../Common';
 import { ViewMenuContent } from './ViewMenuContent';
 import { getCurrentWorkspaceById } from '../../utils/workspaceScope';
 
 interface TopMenuBarProps {
   onNewConversation: () => void;
   onSettings: () => void;
+  onOpenVersions: () => void;
   onCreateWorkspace: () => void;
   onToggleTheme: () => void;
   theme: 'dark' | 'light';
-  engineLabel?: string;
-  engineVersion?: string;
-  engineStatus?: 'online' | 'offline' | 'loading' | 'error';
 }
 
 interface ConfirmDialogProps {
@@ -74,12 +72,10 @@ function ActionButton({ title, onClick, disabled = false, children }: ActionButt
 export function TopMenuBar({
   onNewConversation,
   onSettings,
+  onOpenVersions,
   onCreateWorkspace: _onCreateWorkspace,
   onToggleTheme,
   theme,
-  engineLabel,
-  engineVersion,
-  engineStatus = 'offline',
 }: TopMenuBarProps) {
   const { config } = useConfigStore();
   const workspaces = useWorkspaceStore((state) => state.workspaces);
@@ -135,24 +131,10 @@ export function TopMenuBar({
 
   return (
     <div className="shrink-0 border-b border-border bg-background-base px-3 py-2">
-      <div className="flex items-center gap-2">
-        {/* 左侧：Logo + 引擎状态 */}
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center">
           <BrandLogo size={26} nameClassName="text-sm font-semibold text-text-primary" iconClassName="rounded-xl" />
-          {engineLabel && (
-            <div className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-lg bg-background-surface border border-border">
-              <StatusIndicator status={engineStatus} size="sm" />
-              <div className="flex items-center gap-1 text-xs text-text-secondary">
-                <span className="text-text-primary">{engineLabel}</span>
-                {engineVersion && (
-                  <span className="text-text-tertiary">· {engineVersion}</span>
-                )}
-              </div>
-            </div>
-          )}
         </div>
-
-        <div className="flex-1" />
 
         {/* 右侧：操作按钮组 */}
         <div className="flex items-center gap-1">
@@ -180,6 +162,11 @@ export function TopMenuBar({
           <ActionButton title="导出对话" onClick={handleExportChat} disabled={messages.length === 0 || isExporting}>
             <Download className="h-4 w-4" />
             <span className="hidden lg:inline">导出</span>
+          </ActionButton>
+
+          <ActionButton title="版本管理" onClick={onOpenVersions}>
+            <GitBranch className="h-4 w-4" />
+            <span className="hidden lg:inline">版本</span>
           </ActionButton>
 
           <ActionButton title="新对话" onClick={handleNewConversation}>

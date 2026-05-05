@@ -1,11 +1,21 @@
-﻿import type { EngineId, FloatingWindowMode } from '../../types';
+import type { EngineId, FloatingWindowMode } from '../../types';
+import { Cpu, Server, Palette, MonitorCog, BookOpen, type LucideIcon } from 'lucide-react';
 
-export type SettingsSectionId = 'engine' | 'floating' | 'about';
+export type SettingsSectionId = 'engine' | 'providers' | 'appearance' | 'floating' | 'about';
 
-export const SETTINGS_SECTIONS: { id: SettingsSectionId; name: string; description: string }[] = [
-  { id: 'engine', name: '引擎设置', description: '默认引擎与 CLI 路径' },
-  { id: 'floating', name: '悬浮窗', description: '悬浮窗行为与切换方式' },
-  { id: 'about', name: '关于', description: '项目信息与鸣谢' },
+export interface SettingsSection {
+  id: SettingsSectionId;
+  name: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  { id: 'engine', name: '引擎设置', description: '引擎配置', icon: Cpu },
+  { id: 'providers', name: '模型服务商', description: '端点密钥', icon: Server },
+  { id: 'appearance', name: '外观', description: '主题显示', icon: Palette },
+  { id: 'floating', name: '通用', description: '悬浮窗', icon: MonitorCog },
+  { id: 'about', name: '关于', description: '应用信息', icon: BookOpen },
 ];
 
 export const ENGINE_OPTIONS: { id: EngineId; name: string; description: string }[] = [

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { WorkspaceVersion, WorkspaceVersionKind } from '../types';
+import type { RestoreWorkspaceVersionCheck, WorkspaceVersion, WorkspaceVersionKind } from '../types';
 
 export async function listWorkspaceVersions(workspacePath: string): Promise<WorkspaceVersion[]> {
   return invoke<WorkspaceVersion[]>('list_workspace_versions', { workspacePath });
@@ -12,6 +12,14 @@ export async function createWorkspaceVersion(options: {
 }): Promise<WorkspaceVersion> {
   const { workspacePath, kind, label } = options;
   return invoke<WorkspaceVersion>('create_workspace_version', { workspacePath, label, kind });
+}
+
+export async function checkRestoreWorkspaceVersion(options: {
+  workspacePath: string;
+  versionId: string;
+}): Promise<RestoreWorkspaceVersionCheck> {
+  const { workspacePath, versionId } = options;
+  return invoke<RestoreWorkspaceVersionCheck>('check_restore_workspace_version', { workspacePath, versionId });
 }
 
 export async function restoreWorkspaceVersion(options: {

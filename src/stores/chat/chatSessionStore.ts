@@ -5,13 +5,18 @@
  */
 
 import { create } from 'zustand';
-import type { UserChatMessage } from '../../types';
+
+let chatEventListenerCleanup: (() => void) | null = null;
+let chatEventListenerInitializing: Promise<(() => void) | void> | null = null;
+import type { QueuedMessageStatus, UserChatMessage } from '../../types';
 import { getEventBus } from '../../ai-runtime';
 import { continueChat as tauriContinueChat, interruptChat as tauriInterruptChat, listenEvent } from '../../services/tauri';
 import { estimateMessageTokens } from '../../utils/tokenEstimator';
 import { useToolPanelStore } from '../toolPanelStore';
 import { useVersioningStore } from '../versioningStore';
 import { useWorkspaceStore } from '../workspaceStore';
+import { useErrorCenterStore } from '../errorCenterStore';
+import { useConfigStore } from '../configStore';
 import {
   convertStreamEventToAIEvents,
   extractErrorMessage,
@@ -22,6 +27,15 @@ import { buildAutoCheckpointLabel, scheduleAutoCheckpoint } from './chatSessionA
 import { handleAIEvent } from './chatSessionEventHandler';
 import { buildNormalizedChatPayload, createUserMessage, dispatchChatRequest } from './chatSessionSendHelpers';
 
+interface QueueMessageItem {
+  id: string;
+  content: string;
+  workspaceDir?: string;
+  status: QueuedMessageStatus;
+  createdAt: string;
+  messageId?: string;
+}
+
 export interface ChatSessionState {
   /** 当前会话 ID */
   conversationId: string | null;
@@ -31,6 +45,12 @@ export interface ChatSessionState {
   error: string | null;
   /** 是否已初始化 */
   isInitialized: boolean;
+  /** 是否已在前端本地完成中断收尾 */
+  interruptedLocally: boolean;
+  /** 待处理队列（仅 queued） */
+  pendingQueue: QueueMessageItem[];
+  /** 当前执行中的队列项 */
+  activeQueueItem: QueueMessageItem | null;
 
   // Actions
   setConversationId: (id: string | null) => void;
@@ -38,9 +58,42 @@ export interface ChatSessionState {
   setError: (error: string | null) => void;
   initializeEventListeners: () => () => void;
   sendMessage: (content: string, workspaceDir?: string) => Promise<void>;
+  enqueueMessage: (content: string, workspaceDir?: string) => Promise<void>;
+  editQueuedMessage: (queueItemId: string, content: string) => void;
+  removeQueuedMessage: (queueItemId: string) => void;
+  processNextQueuedMessage: () => Promise<void>;
+  completeActiveQueueItem: () => void;
+  clearPendingQueue: () => void;
   continueChat: (prompt?: string) => Promise<void>;
   interruptChat: () => Promise<void>;
   regenerateMessage: (id: string) => Promise<void>;
+}
+
+function pushChatError(title: string, message: string, source?: string) {
+  useErrorCenterStore.getState().pushError({
+    scope: 'chat',
+    level: 'error',
+    title,
+    message,
+    source,
+  });
+}
+
+function resolveActiveModelLabel(): string | null {
+  const config = useConfigStore.getState().config;
+  if (!config) return null;
+
+  switch (config.defaultEngine) {
+    case 'iflow':
+      return config.iflow.model?.trim() || null;
+    case 'codex-cli':
+      return config.codexCli.model?.trim() || null;
+    case 'gemini':
+      return config.gemini.model?.trim() || null;
+    case 'claude-code':
+    default:
+      return config.claudeCode.model?.trim() || null;
+  }
 }
 
 function ensureWorkspacePath(workspaceDir: string | undefined): string | null {
@@ -48,7 +101,7 @@ function ensureWorkspacePath(workspaceDir: string | undefined): string | null {
   const currentWorkspace = workspaceStore.getCurrentWorkspace();
 
   if (!currentWorkspace) {
-    useChatMessageStore.getState().addErrorMessage('请先创建或选择一个工作区');
+    pushChatError('工作区不可用', '请先创建或选择一个工作区', 'chatSessionStore.ensureWorkspacePath');
     return null;
   }
 
@@ -74,11 +127,83 @@ function scheduleAutoCheckpointIfNeeded(options: {
   });
 }
 
+async function dispatchMessageWithoutCreatingUser(options: {
+  content: string;
+  workspaceDir?: string;
+  conversationId: string | null;
+}) {
+  const workDir = ensureWorkspacePath(options.workspaceDir);
+  if (!workDir) {
+    return null;
+  }
+
+  const workspaceStore = useWorkspaceStore.getState();
+  const { normalizedMessage, normalizedSystemPrompt } = buildNormalizedChatPayload({
+    content: options.content,
+    workspaces: workspaceStore.workspaces,
+    contextWorkspaces: workspaceStore.getContextWorkspaces(),
+    currentWorkspaceId: workspaceStore.currentWorkspaceId,
+  });
+
+  useChatMessageStore.getState().resetStreamingState();
+  useChatMessageStore.getState().setActiveModelLabel(resolveActiveModelLabel());
+  useToolPanelStore.getState().clearTools();
+
+  const dispatchPromise = dispatchChatRequest({
+    conversationId: options.conversationId,
+    normalizedMessage,
+    normalizedSystemPrompt,
+    workDir,
+  });
+
+  scheduleAutoCheckpointIfNeeded({
+    conversationId: options.conversationId,
+    workDir,
+    content: options.content,
+  });
+
+  return {
+    dispatchPromise,
+    workDir,
+  };
+}
+
+async function startQueuedMessage(queueItem: QueueMessageItem, conversationId: string | null) {
+  const msgStore = useChatMessageStore.getState();
+  const queuedMessage = [...msgStore.archivedMessages, ...msgStore.messages]
+    .find((message) => message.type === 'user' && message.queueItemId === queueItem.id);
+
+  if (!queuedMessage) {
+    return null;
+  }
+
+  msgStore.updateMessageQueueState(queuedMessage.id, 'running');
+
+  const dispatchResult = await dispatchMessageWithoutCreatingUser({
+    content: queueItem.content,
+    workspaceDir: queueItem.workspaceDir,
+    conversationId,
+  });
+
+  if (!dispatchResult) {
+    msgStore.deleteMessage(queuedMessage.id);
+    return null;
+  }
+
+  return {
+    dispatchPromise: dispatchResult.dispatchPromise,
+    messageId: queuedMessage.id,
+  };
+}
+
 export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
   conversationId: null,
   isStreaming: false,
   error: null,
   isInitialized: false,
+  interruptedLocally: false,
+  pendingQueue: [],
+  activeQueueItem: null,
 
   setConversationId: (id) => {
     set({ conversationId: id });
@@ -93,89 +218,232 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
   },
 
   initializeEventListeners: () => {
-    const cleanupCallbacks: Array<() => void> = [];
-    const eventBus = getEventBus({ debug: false });
-
-    listenEvent<unknown>('chat-event', (payload) => {
-      try {
-        const streamEvent = parseStreamEventPayload(payload);
-        if (!streamEvent) return;
-        const state = get();
-        console.log('[ChatSessionStore] 收到 chat-event:', streamEvent.type);
-
-        const aiEvents = convertStreamEventToAIEvents(streamEvent, state.conversationId);
-
-        for (const aiEvent of aiEvents) {
-          eventBus.emit(aiEvent);
-          handleAIEvent(aiEvent, set);
+    if (chatEventListenerCleanup) {
+      return () => {
+        if (chatEventListenerCleanup) {
+          chatEventListenerCleanup();
+          chatEventListenerCleanup = null;
         }
-      } catch (error) {
-        console.error('[ChatSessionStore] 解析 chat-event 失败:', error);
-      }
-    })
-      .then((unlisten) => {
-        cleanupCallbacks.push(unlisten);
+      };
+    }
+
+    if (!chatEventListenerInitializing) {
+      const eventBus = getEventBus({ debug: false });
+      chatEventListenerInitializing = listenEvent<unknown>('chat-event', (payload) => {
+        try {
+          const streamEvent = parseStreamEventPayload(payload);
+          if (!streamEvent) return;
+          const state = get();
+          console.log('[ChatSessionStore] 收到 chat-event:', streamEvent.type);
+
+          const aiEvents = convertStreamEventToAIEvents(streamEvent, state.conversationId);
+
+          for (const aiEvent of aiEvents) {
+            eventBus.emit(aiEvent);
+            handleAIEvent(aiEvent, set);
+          }
+        } catch (error) {
+          console.error('[ChatSessionStore] 解析 chat-event 失败:', error);
+        }
       })
-      .catch((error) => {
-        console.error('[ChatSessionStore] 监听 chat-event 失败:', error);
-      });
+        .then((unlisten) => {
+          chatEventListenerCleanup = unlisten;
+          chatEventListenerInitializing = null;
+          return unlisten;
+        })
+        .catch((error) => {
+          chatEventListenerInitializing = null;
+          console.error('[ChatSessionStore] 监听 chat-event 失败:', error);
+        });
+    }
 
     return () => {
-      cleanupCallbacks.forEach((cleanup) => cleanup());
+      if (chatEventListenerCleanup) {
+        chatEventListenerCleanup();
+        chatEventListenerCleanup = null;
+      }
     };
   },
 
   sendMessage: async (content, workspaceDir) => {
+    await get().enqueueMessage(content, workspaceDir);
+  },
+
+  enqueueMessage: async (content, workspaceDir) => {
     const workDir = ensureWorkspacePath(workspaceDir);
     if (!workDir) {
       return;
     }
 
-    const conversationId = get().conversationId;
-    const workspaceStore = useWorkspaceStore.getState();
     const msgStore = useChatMessageStore.getState();
-
-    const { normalizedMessage, normalizedSystemPrompt } = buildNormalizedChatPayload({
+    const queueItemId = crypto.randomUUID();
+    const queueItem: QueueMessageItem = {
+      id: queueItemId,
       content,
-      workspaces: workspaceStore.workspaces,
-      contextWorkspaces: workspaceStore.getContextWorkspaces(),
-      currentWorkspaceId: workspaceStore.currentWorkspaceId,
-    });
+      workspaceDir: workDir,
+      status: 'queued',
+      createdAt: new Date().toISOString(),
+    };
 
-    msgStore.addMessage(createUserMessage(content));
     msgStore.addInputTokens(estimateMessageTokens(content));
 
-    msgStore.resetStreamingState();
-    set({ isStreaming: true, error: null });
-    useToolPanelStore.getState().clearTools();
+    set((state) => ({
+      pendingQueue: [...state.pendingQueue, queueItem],
+      error: null,
+    }));
 
-    const dispatchPromise = dispatchChatRequest({
-      conversationId,
-      normalizedMessage,
-      normalizedSystemPrompt,
-      workDir,
-    });
+    const queuedMessage = createUserMessage(content);
+    queuedMessage.queueItemId = queueItemId;
+    queuedMessage.queueStatus = 'queued';
+    msgStore.addMessage(queuedMessage);
 
-    scheduleAutoCheckpointIfNeeded({ conversationId, workDir, content });
+    if (!get().isStreaming) {
+      await get().processNextQueuedMessage();
+    }
+  },
+
+  editQueuedMessage: (queueItemId, content) => {
+    const target = get().pendingQueue.find((item) => item.id === queueItemId);
+    if (!target || target.status !== 'queued') {
+      return;
+    }
+
+    set((state) => ({
+      pendingQueue: state.pendingQueue.map((item) => (
+        item.id === queueItemId
+          ? { ...item, content }
+          : item
+      )),
+    }));
+
+    useChatMessageStore.getState().setQueuedMessageContent(queueItemId, content);
+  },
+
+  removeQueuedMessage: (queueItemId) => {
+    const target = get().pendingQueue.find((item) => item.id === queueItemId);
+    if (!target || target.status !== 'queued') {
+      return;
+    }
+
+    set((state) => ({
+      pendingQueue: state.pendingQueue.filter((item) => item.id !== queueItemId),
+    }));
+
+    if (target.messageId) {
+      const messageStore = useChatMessageStore.getState();
+      messageStore.updateMessageQueueState(target.messageId, undefined);
+      messageStore.setQueuedMessageId(target.messageId, undefined);
+      messageStore.deleteMessage(target.messageId);
+    }
+  },
+
+  processNextQueuedMessage: async () => {
+    const state = get();
+    if (state.isStreaming) {
+      return;
+    }
+
+    const nextItem = state.pendingQueue.find((item) => item.status === 'queued');
+    if (!nextItem) {
+      return;
+    }
+
+    if (nextItem.messageId) {
+      const messageStore = useChatMessageStore.getState();
+      messageStore.updateMessageQueueState(nextItem.messageId, 'running');
+      messageStore.setQueuedMessageId(nextItem.messageId, nextItem.id);
+    }
+
+    set((current) => ({
+      isStreaming: true,
+      error: null,
+      interruptedLocally: false,
+      activeQueueItem: { ...nextItem, status: 'running' },
+      pendingQueue: current.pendingQueue.filter((item) => item.id !== nextItem.id),
+    }));
 
     try {
-      const newSessionId = await dispatchPromise;
-      if (newSessionId) {
-        set({ conversationId: newSessionId });
+      const startResult = await startQueuedMessage(nextItem, get().conversationId);
+      if (startResult) {
+        if (startResult.messageId) {
+          const messageStore = useChatMessageStore.getState();
+          messageStore.setQueuedMessageId(startResult.messageId, nextItem.id);
+          messageStore.updateMessageQueueState(startResult.messageId, 'running');
+          set((current) => ({
+            activeQueueItem: current.activeQueueItem?.id === nextItem.id
+              ? { ...current.activeQueueItem, messageId: startResult.messageId }
+              : current.activeQueueItem,
+          }));
+        }
+
+        if (startResult.dispatchPromise) {
+          const newSessionId = await startResult.dispatchPromise;
+          if (newSessionId) {
+            set({ conversationId: newSessionId });
+          }
+        }
       }
     } catch (error) {
-      msgStore.addErrorMessage(extractErrorMessage(error, '发送消息失败'));
-      set({ isStreaming: false });
+      const msgStore = useChatMessageStore.getState();
+      const errorMessage = extractErrorMessage(error, '发送消息失败');
+      pushChatError('发送消息失败', errorMessage, 'chatSessionStore.processNextQueuedMessage');
+      if (nextItem.messageId) {
+        msgStore.deleteMessage(nextItem.messageId);
+      }
+      set({
+        error: errorMessage,
+        isStreaming: false,
+        activeQueueItem: null,
+      });
+      queueMicrotask(() => {
+        void get().processNextQueuedMessage();
+      });
     }
+  },
+
+  completeActiveQueueItem: () => {
+    const { activeQueueItem } = get();
+    if (!activeQueueItem) {
+      return;
+    }
+
+    if (activeQueueItem.messageId) {
+      const messageStore = useChatMessageStore.getState();
+      messageStore.updateMessageQueueState(activeQueueItem.messageId, undefined);
+      messageStore.setQueuedMessageId(activeQueueItem.messageId, undefined);
+    }
+
+    set({ activeQueueItem: null });
+  },
+
+  clearPendingQueue: () => {
+    const { pendingQueue, activeQueueItem } = get();
+    const messageStore = useChatMessageStore.getState();
+
+    for (const item of pendingQueue) {
+      if (item.messageId) {
+        messageStore.updateMessageQueueState(item.messageId, undefined);
+        messageStore.setQueuedMessageId(item.messageId, undefined);
+        if (item.status === 'queued') {
+          messageStore.deleteMessage(item.messageId);
+        }
+      }
+    }
+
+    if (activeQueueItem?.messageId) {
+      messageStore.updateMessageQueueState(activeQueueItem.messageId, undefined);
+      messageStore.setQueuedMessageId(activeQueueItem.messageId, undefined);
+    }
+
+    set({ pendingQueue: [], activeQueueItem: null });
   },
 
   continueChat: async (prompt = '') => {
     const { conversationId } = get();
-    const msgStore = useChatMessageStore.getState();
 
     if (!conversationId) {
-      set({ isStreaming: false });
-      msgStore.addErrorMessage('没有活动会话');
+      set({ isStreaming: false, error: '没有活动会话' });
+      pushChatError('继续对话失败', '没有活动会话', 'chatSessionStore.continueChat');
       return;
     }
 
@@ -195,20 +463,22 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
         workDir,
       });
     } catch (error) {
+      const errorMessage = extractErrorMessage(error, '继续对话失败');
+      pushChatError('继续对话失败', errorMessage, 'chatSessionStore.continueChat');
       set({
-        error: extractErrorMessage(error, '继续对话失败'),
+        error: errorMessage,
         isStreaming: false,
       });
     }
   },
 
   interruptChat: async () => {
-    const { conversationId } = get();
+    const { conversationId, activeQueueItem, pendingQueue } = get();
     const msgStore = useChatMessageStore.getState();
 
     if (!conversationId) {
-      set({ isStreaming: false });
-      msgStore.setProgressMessage(null);
+      set({ isStreaming: false, interruptedLocally: false });
+      msgStore.setRunStatus(null);
       return;
     }
 
@@ -217,34 +487,74 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
       tokenBuffer.end();
     }
 
+    const hasQueuedItems = pendingQueue.length > 0;
+
     try {
       await tauriInterruptChat(conversationId);
-      set({ isStreaming: false });
-      msgStore.finishMessage();
     } catch (error) {
+      const errorMessage = extractErrorMessage(error, '中断会话失败');
       console.error('[ChatSessionStore] Interrupt failed:', error);
-      set({ isStreaming: false });
-      msgStore.setProgressMessage(null);
+      pushChatError('中断会话失败', errorMessage, 'chatSessionStore.interruptChat');
+      set({ error: errorMessage });
+    } finally {
+      msgStore.finishMessage();
+      msgStore.setRunStatus(null);
+      if (activeQueueItem?.messageId) {
+        msgStore.updateMessageQueueState(activeQueueItem.messageId, undefined);
+      }
+      set({
+        isStreaming: false,
+        interruptedLocally: true,
+        activeQueueItem: null,
+      });
+      if (hasQueuedItems) {
+        queueMicrotask(() => {
+          void get().processNextQueuedMessage();
+        });
+      }
     }
   },
 
   regenerateMessage: async (id) => {
     const msgStore = useChatMessageStore.getState();
-    const { messages } = msgStore;
-    const idx = messages.findIndex((m) => m.id === id);
+    const allMessages = [...msgStore.archivedMessages, ...msgStore.messages];
+    const idx = allMessages.findIndex((m) => m.id === id);
     if (idx < 0) return;
 
-    let userMsg: string | null = null;
+    let userMessage: UserChatMessage | null = null;
     for (let i = idx - 1; i >= 0; i--) {
-      if (messages[i].type === 'user') {
-        userMsg = (messages[i] as UserChatMessage).content;
+      if (allMessages[i].type === 'user') {
+        userMessage = allMessages[i] as UserChatMessage;
         break;
       }
     }
-    if (!userMsg) return;
+    if (!userMessage) return;
 
-    useChatMessageStore.setState({ messages: messages.slice(0, idx) });
-    await get().sendMessage(userMsg);
+    msgStore.truncateConversationBefore(id);
+    set({ isStreaming: true, error: null, interruptedLocally: false });
+
+    try {
+      const dispatchResult = await dispatchMessageWithoutCreatingUser({
+        content: userMessage.content,
+        conversationId: get().conversationId,
+      });
+
+      if (!dispatchResult) {
+        set({ isStreaming: false });
+        return;
+      }
+
+      const newSessionId = await dispatchResult.dispatchPromise;
+      if (newSessionId) {
+        set({ conversationId: newSessionId });
+      }
+    } catch (error) {
+      const errorMessage = extractErrorMessage(error, '重新生成失败');
+      pushChatError('重新生成失败', errorMessage, 'chatSessionStore.regenerateMessage');
+      set({
+        error: errorMessage,
+        isStreaming: false,
+      });
+    }
   },
 }));
-

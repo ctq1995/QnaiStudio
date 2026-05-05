@@ -130,7 +130,14 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
       }
       break
     }
-    case 'session_end':
+    case 'session_end': {
+      events.push({
+        type: 'session_end',
+        sessionId: sessionId || 'unknown',
+        reason: streamEvent.reason === 'aborted' ? 'aborted' : streamEvent.reason === 'completed' ? 'completed' : 'error',
+      })
+      break
+    }
     case 'result': {
       events.push({
         type: 'session_end',
@@ -241,9 +248,19 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
       break
     }
     case 'permission_request': {
+      const sessionId = (streamEvent.sessionId as string) || ''
+      const rawDenials = (streamEvent.denials as unknown[]) || []
+      const denials = rawDenials.map((d: unknown) => {
+        const obj = (typeof d === 'object' && d !== null) ? d as Record<string, unknown> : {}
+        return {
+          toolName: (obj.toolName as string) || (obj.tool_name as string) || 'unknown',
+          reason: (obj.reason as string) || '',
+        }
+      })
       events.push({
-        type: 'progress',
-        message: '等待权限确认...',
+        type: 'permission_request',
+        sessionId,
+        denials,
       })
       break
     }
@@ -274,11 +291,29 @@ export function extractErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+/** 当前 assistant 消息上的临时状态 */
+export interface InlineAssistantStatus {
+  kind: 'reconnecting' | 'error'
+  summary: string
+  detail: string
+}
+
+/** 会话级 CLI 运行状态 */
+export interface ChatRunStatus {
+  kind: 'running' | 'tool' | 'reconnecting' | 'error'
+  summary: string
+  detail?: string | null
+  toolName?: string | null
+  updatedAt: string
+  scope: 'session'
+}
+
 /** 当前正在构建的 Assistant 消息 */
 export interface CurrentAssistantMessage {
   id: string
   blocks: ContentBlock[]
   isStreaming: true
+  inlineStatus?: InlineAssistantStatus | null
 }
 
 /** 常量 */

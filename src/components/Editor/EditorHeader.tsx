@@ -2,14 +2,17 @@
  * 编辑器顶部栏组件
  */
 
+import { useState } from 'react';
 import { useFileEditorStore } from '../../stores';
+import { ConfirmDialog } from '../Common';
 
 interface EditorHeaderProps {
   className?: string;
 }
 
 export function EditorHeader({ className = '' }: EditorHeaderProps) {
-  const { currentFile, saveFile, closeFile, status } = useFileEditorStore();
+  const { currentFile, saveFile, closeFile, discardCurrentFile, hasUnsavedChanges, status } = useFileEditorStore();
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
 
   if (!currentFile) return null;
 
@@ -22,6 +25,23 @@ export function EditorHeader({ className = '' }: EditorHeaderProps) {
     } catch (error) {
       console.error('Failed to save file:', error);
     }
+  };
+
+  const handleRequestClose = () => {
+    if (hasUnsavedChanges()) {
+      setShowCloseConfirm(true);
+      return;
+    }
+    closeFile();
+  };
+
+  const handleCancelClose = () => {
+    setShowCloseConfirm(false);
+  };
+
+  const handleConfirmClose = () => {
+    setShowCloseConfirm(false);
+    discardCurrentFile();
   };
 
   return (
@@ -77,7 +97,7 @@ export function EditorHeader({ className = '' }: EditorHeaderProps) {
         )}
 
         <button
-          onClick={closeFile}
+          onClick={handleRequestClose}
           className="p-1 rounded-md text-text-tertiary hover:text-text-primary hover:bg-background-hover
                    transition-colors"
           title="关闭文件"
@@ -87,6 +107,17 @@ export function EditorHeader({ className = '' }: EditorHeaderProps) {
           </svg>
         </button>
       </div>
+
+      <ConfirmDialog
+        open={showCloseConfirm}
+        title="放弃未保存的更改？"
+        message={`文件「${currentFile.name}」有未保存改动。关闭后这些更改将丢失。`}
+        cancelText="继续编辑"
+        confirmText="放弃更改并关闭"
+        tone="danger"
+        onCancel={handleCancelClose}
+        onConfirm={handleConfirmClose}
+      />
     </div>
   );
 }

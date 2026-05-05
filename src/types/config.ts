@@ -24,32 +24,80 @@ export interface FloatingWindowConfig {
   collapseDelay: number
 }
 
+/** 模型服务商类型 */
+export type ProviderKind = 'openai-compatible' | 'anthropic-compatible' | 'gemini-compatible' | 'custom'
+
+/** 模型服务商配置 */
+export interface ModelProviderConfig {
+  id: string
+  name: string
+  kind: ProviderKind
+  apiKey?: string
+  baseUrl?: string
+}
+
+/** Claude Code 权限模式 */
+export type ClaudePermissionMode = 'bypassPermissions' | 'default' | 'plan'
+
+/** Claude Code 输出格式 */
+export type ClaudeOutputFormat = 'stream-json' | 'text' | 'json'
+
+/** Claude Code 高级参数 */
+export interface ClaudeAdvancedParams {
+  systemPrompt?: string
+  appendSystemPrompt?: string
+  permissionMode?: ClaudePermissionMode
+  maxTurns?: number
+  outputFormat?: ClaudeOutputFormat
+  verbose?: boolean
+}
+
+/** Codex CLI 审批模式 */
+export type CodexApprovalMode = 'suggest' | 'auto-edit' | 'full-auto'
+
+/** Codex CLI 高级参数 */
+export interface CodexAdvancedParams {
+  skipGitRepoCheck?: boolean
+  bypassApprovalsAndSandbox?: boolean
+  approvalMode?: CodexApprovalMode
+}
+
+/** Gemini CLI 审批模式 */
+export type GeminiApprovalMode = 'default' | 'auto-edit' | 'yolo' | 'plan'
+
+/** Gemini CLI 高级参数 */
+export interface GeminiAdvancedParams {
+  yolo?: boolean
+  sandbox?: boolean
+  approvalMode?: GeminiApprovalMode
+}
+
+export interface EngineRuntimeBinding {
+  cliPath?: string
+  providerId?: string
+  model?: string
+  /** 旧字段：兼容已有配置，逐步迁移到 providers */
+  apiKey?: string
+  /** 旧字段：兼容已有配置，逐步迁移到 providers */
+  baseUrl?: string
+}
+
 /** 应用配置 */
 export interface Config {
   defaultEngine: EngineId
-  claudeCode: {
+  providers: ModelProviderConfig[]
+  claudeCode: EngineRuntimeBinding & {
     cliPath: string
-    apiKey?: string
-    baseUrl?: string
-    model?: string
+    advanced?: ClaudeAdvancedParams
   }
-  iflow: {
-    cliPath?: string
-    apiKey?: string
-    baseUrl?: string
-    model?: string
-  }
-  codexCli: {
+  iflow: EngineRuntimeBinding
+  codexCli: EngineRuntimeBinding & {
     cliPath: string
-    apiKey?: string
-    baseUrl?: string
-    model?: string
+    advanced?: CodexAdvancedParams
   }
-  gemini: {
+  gemini: EngineRuntimeBinding & {
     cliPath: string
-    apiKey?: string
-    baseUrl?: string
-    model?: string
+    advanced?: GeminiAdvancedParams
   }
   workDir?: string
   sessionDir?: string

@@ -338,10 +338,12 @@ impl ConfigStore {
         let codex_path = config.get_codex_cmd();
         let gemini_path = config.get_gemini_cmd();
         let iflow_path = config.iflow.cli_path.clone().or_else(Self::find_iflow_path);
+        let custom_cli_path = config.get_custom_cli_cmd();
 
         let (claude_available, claude_version) = Self::probe_engine_health(&claude_path, "--version")?;
         let (codex_available, codex_version) = Self::probe_engine_health(&codex_path, "--version")?;
         let (gemini_available, gemini_version) = Self::probe_engine_health(&gemini_path, "--version")?;
+        let (custom_cli_available, custom_cli_version) = Self::probe_engine_health(&custom_cli_path, "--version")?;
         let (iflow_available, iflow_version) = match iflow_path {
             Some(path) => Self::probe_engine_health(&path, "--version")?,
             None => (false, None),
@@ -356,8 +358,10 @@ impl ConfigStore {
             codex_version,
             gemini_available,
             gemini_version,
+            custom_cli_available,
+            custom_cli_version,
             work_dir: config.work_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
-            config_valid: claude_available || codex_available || iflow_available || gemini_available,
+            config_valid: claude_available || codex_available || iflow_available || gemini_available || custom_cli_available,
         })
     }
 
@@ -397,6 +401,7 @@ impl OldConfig {
             codex_cli: Default::default(),
             iflow: Default::default(),
             gemini: Default::default(),
+            custom_cli: Default::default(),
             providers: Vec::new(),
             work_dir: self.work_dir,
             session_dir: self.session_dir,

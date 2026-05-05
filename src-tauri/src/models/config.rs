@@ -262,6 +262,32 @@ impl Default for GeminiConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomCliConfig {
+    pub cli_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl Default for CustomCliConfig {
+    fn default() -> Self {
+        Self {
+            cli_path: "custom-cli".to_string(),
+            provider_id: None,
+            api_key: None,
+            base_url: None,
+            model: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineId {
@@ -269,6 +295,7 @@ pub enum EngineId {
     CodexCli,
     IFlow,
     Gemini,
+    CustomCli,
 }
 
 impl Default for EngineId {
@@ -284,6 +311,7 @@ impl EngineId {
             Self::CodexCli => "codex-cli",
             Self::IFlow => "iflow",
             Self::Gemini => "gemini",
+            Self::CustomCli => "custom-cli",
         }
     }
 
@@ -293,6 +321,7 @@ impl EngineId {
             "codex-cli" => Some(Self::CodexCli),
             "iflow" => Some(Self::IFlow),
             "gemini" => Some(Self::Gemini),
+            "custom-cli" => Some(Self::CustomCli),
             _ => None,
         }
     }
@@ -361,6 +390,8 @@ pub struct Config {
     #[serde(default)]
     pub gemini: GeminiConfig,
     #[serde(default)]
+    pub custom_cli: CustomCliConfig,
+    #[serde(default)]
     pub providers: Vec<ModelProviderConfig>,
     pub work_dir: Option<PathBuf>,
     pub session_dir: Option<PathBuf>,
@@ -383,6 +414,7 @@ impl Default for Config {
             codex_cli: CodexCliConfig::default(),
             iflow: IFlowConfig::default(),
             gemini: GeminiConfig::default(),
+            custom_cli: CustomCliConfig::default(),
             providers: Vec::new(),
             work_dir: None,
             session_dir: None,
@@ -411,6 +443,10 @@ impl Config {
         self.gemini.cli_path.clone()
     }
 
+    pub fn get_custom_cli_cmd(&self) -> String {
+        self.custom_cli.cli_path.clone()
+    }
+
     pub fn migrate(&mut self) {
         if let Some(ref cmd) = self.claude_cmd {
             if self.claude_code.cli_path == "claude" && !cmd.is_empty() {
@@ -424,6 +460,10 @@ impl Config {
 
         if self.gemini.cli_path.is_empty() {
             self.gemini.cli_path = "gemini".to_string();
+        }
+
+        if self.custom_cli.cli_path.is_empty() {
+            self.custom_cli.cli_path = "custom-cli".to_string();
         }
 
         if self.providers.is_empty() {
@@ -490,6 +530,18 @@ impl Config {
             });
         }
 
+        if self.custom_cli.base_url.as_ref().is_some() || self.custom_cli.api_key.as_ref().is_some() {
+            let provider_id = "provider-custom-cli-legacy".to_string();
+            self.custom_cli.provider_id = Some(provider_id.clone());
+            migrated.push(ModelProviderConfig {
+                id: provider_id,
+                name: "Custom CLI 旧配置迁移".to_string(),
+                kind: "custom".to_string(),
+                api_key: self.custom_cli.api_key.clone(),
+                base_url: self.custom_cli.base_url.clone(),
+            });
+        }
+
         if !migrated.is_empty() {
             self.providers = migrated;
         }
@@ -543,6 +595,18 @@ impl Config {
             .or_else(|| self.iflow.base_url.as_deref().filter(|v| !v.is_empty()))
     }
 
+    pub fn resolve_custom_cli_api_key(&self) -> Option<&str> {
+        self.get_provider(self.custom_cli.provider_id.as_deref())
+            .and_then(|provider| provider.api_key.as_deref().filter(|v| !v.is_empty()))
+            .or_else(|| self.custom_cli.api_key.as_deref().filter(|v| !v.is_empty()))
+    }
+
+    pub fn resolve_custom_cli_base_url(&self) -> Option<&str> {
+        self.get_provider(self.custom_cli.provider_id.as_deref())
+            .and_then(|provider| provider.base_url.as_deref().filter(|v| !v.is_empty()))
+            .or_else(|| self.custom_cli.base_url.as_deref().filter(|v| !v.is_empty()))
+    }
+
     pub fn get_engine_id(&self) -> EngineId {
         EngineId::from_str(&self.default_engine).unwrap_or(EngineId::ClaudeCode)
     }
@@ -563,6 +627,8 @@ pub struct HealthStatus {
     pub codex_version: Option<String>,
     pub gemini_available: bool,
     pub gemini_version: Option<String>,
+    pub custom_cli_available: bool,
+    pub custom_cli_version: Option<String>,
     pub work_dir: Option<String>,
     pub config_valid: bool,
 }

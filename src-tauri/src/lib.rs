@@ -352,6 +352,12 @@ async fn test_engine_connection(
             }
             c
         }
+        models::config::EngineId::CustomCli => {
+            let custom_cli_cmd = config.get_custom_cli_cmd();
+            let mut c = Command::new(&custom_cli_cmd);
+            c.arg("--version");
+            c
+        }
     };
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

@@ -3,6 +3,7 @@ import { useConfigStore } from '../../stores';
 import { Button, ClaudePathSelector } from './index';
 import { getEngineAvailability, getEngineVersion } from '../../types';
 import type { EngineId } from '../../types';
+import { getEngineCapabilities } from '../../utils/engineLabels';
 
 const ENGINE_META: Record<
   EngineId,
@@ -78,9 +79,9 @@ export function ConnectingOverlay() {
   const isAvailable = healthStatus ? getEngineAvailability(healthStatus, currentEngine) : false;
   const isConnecting = connectionState === 'connecting';
   const isFailed = connectionState === 'failed';
-  const isCustomCli = currentEngine === 'custom-cli';
+  const engineCapabilities = getEngineCapabilities(currentEngine);
 
-  if (isCustomCli) {
+  if (!engineCapabilities.participatesInConnectionOverlay) {
     return null;
   }
 
@@ -155,14 +156,7 @@ export function ConnectingOverlay() {
 
           {isFailed && (
             <div className="mt-5 w-full space-y-3">
-              {isCustomCli ? (
-                <div className="rounded-2xl border border-border bg-background-surface p-4 text-left">
-                  <p className="text-sm text-text-secondary">Custom CLI 仅提供界面兼容展示，不支持在此处执行重试或路径设置。</p>
-                  {currentCliPath && (
-                    <code className="mt-3 block break-all text-xs text-text-primary">{currentCliPath}</code>
-                  )}
-                </div>
-              ) : !showPathInput ? (
+              {!showPathInput ? (
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Button onClick={handleRetry} variant="primary" className="w-full">
                     重新检测

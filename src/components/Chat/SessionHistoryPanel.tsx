@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { getCurrentWorkspaceById } from '../../utils/workspaceScope';
 import { exportToMarkdown, generateFileName } from '../../services/chatExport';
 import { saveChatToFile } from '../../services/tauri';
+import { getEngineCapabilities } from '../../utils/engineLabels';
 
 interface SessionHistoryPanelProps {
   onClose?: () => void;
@@ -143,13 +144,15 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
   }, [currentWorkspace?.path, loadHistory]);
 
   const handleRestore = async (sessionId: string, engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli') => {
-    if (engineId === 'custom-cli') {
+    if (!getEngineCapabilities(engineId).supportsSessionRestore) {
       return;
     }
 
+    const restorableEngineId = engineId as 'claude-code' | 'iflow' | 'codex-cli' | 'gemini';
+
     setRestoring(sessionId);
     try {
-      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, engineId);
+      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, restorableEngineId);
       if (success) {
         onClose?.();
         return;
@@ -268,7 +271,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
               const EngineIcon = engineInfo.icon;
               const isRestoring = restoring === item.id;
               const canDelete = item.source === 'local';
-              const canRestore = item.engineId !== 'custom-cli';
+              const canRestore = getEngineCapabilities(item.engineId).supportsSessionRestore;
               const totalTokens = (item.inputTokens || 0) + (item.outputTokens || 0);
 
               return (
@@ -308,7 +311,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
                           ? 'cursor-not-allowed opacity-50'
                           : 'text-text-secondary hover:bg-background-elevated hover:text-text-primary',
                       ].join(' ')}
-                      title={canRestore ? '恢复会话' : 'Custom CLI 历史仅展示，不支持恢复'}
+                      title={canRestore ? '恢复会话' : '当前引擎历史仅展示，不支持恢复'}
                     >
                       {isRestoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                     </button>

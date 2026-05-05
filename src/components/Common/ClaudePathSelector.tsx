@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as tauri from '../../services/tauri';
+import { getEngineCapabilities } from '../../utils/engineLabels';
 
 type EngineType = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli';
 type InputMode = 'auto' | 'manual';
@@ -84,15 +85,26 @@ export function ClaudePathSelector({
   placeholder,
 }: ClaudePathSelectorProps) {
   const config = ENGINE_CONFIG[engineType];
-  const isCustomCli = engineType === 'custom-cli';
+  const capabilities = getEngineCapabilities(engineType);
   const [mode, setMode] = useState<InputMode>('manual');
   const [detectedPaths, setDetectedPaths] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [validating, setValidating] = useState(false);
   const [isValid, setIsValid] = useState<boolean | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const helperText = useMemo(() => {
+    if (capabilities.neutralPathValidationMessage) {
+      return capabilities.neutralPathValidationMessage;
+    }
+    return config.example;
+  }, [capabilities.neutralPathValidationMessage, config.example]);
 
   const handleDetectPaths = async () => {
+    if (!capabilities.supportsPathAutoDetect) {
+      setDetectedPaths([]);
+      return;
+    }
+
     setDetecting(true);
 
     try {
@@ -117,6 +129,12 @@ export function ClaudePathSelector({
       return;
     }
 
+    if (!capabilities.supportsPathValidation) {
+      setIsValid(null);
+      setValidationError(null);
+      return;
+    }
+
     setValidating(true);
 
     try {
@@ -132,14 +150,19 @@ export function ClaudePathSelector({
   };
 
   useEffect(() => {
+    if (!capabilities.supportsPathAutoDetect && mode === 'auto') {
+      setMode('manual');
+      return;
+    }
+
     if (mode === 'auto') {
       void handleDetectPaths();
     }
-  }, [engineType, mode]);
+  }, [capabilities.supportsPathAutoDetect, engineType, mode]);
 
   return (
     <div className="space-y-3">
-      {!isCustomCli && (
+      {capabilities.supportsPathAutoDetect && (
         <div className="inline-flex rounded-xl border border-border bg-background p-1">
           <button
             type="button"
@@ -241,8 +264,8 @@ export function ClaudePathSelector({
           </div>
 
           {validationError && <p className="text-xs text-danger">{validationError}</p>}
-          {!isCustomCli && isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
-          {!compact && <p className="text-xs text-text-tertiary">{isCustomCli ? 'Custom CLI 支持手动输入并保存路径，此处不执行路径校验。' : config.example}</p>}
+          {capabilities.supportsPathValidation && isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
+          {!compact && <p className="text-xs text-text-tertiary">{helperText}</p>}
         </div>
       )}
 

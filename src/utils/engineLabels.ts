@@ -2,6 +2,14 @@ import type { EngineId } from '../types';
 
 const DEFAULT_ENGINE_ID: EngineId = 'claude-code';
 
+export interface EngineCapabilityConfig {
+  participatesInConnectionOverlay: boolean;
+  supportsSessionRestore: boolean;
+  supportsPathAutoDetect: boolean;
+  supportsPathValidation: boolean;
+  neutralPathValidationMessage?: string;
+}
+
 export const ENGINE_LABELS: Record<EngineId, string> = {
   'claude-code': 'Claude Code',
   'codex-cli': 'Codex CLI',
@@ -17,6 +25,45 @@ export const ENGINE_VERSION_PREFIX_MAP: Record<EngineId, readonly string[]> = {
   gemini: ['Gemini CLI', 'Gemini'],
   'custom-cli': ['Custom CLI', 'custom-cli'],
 };
+
+export const ENGINE_CAPABILITIES: Record<EngineId, EngineCapabilityConfig> = {
+  'claude-code': {
+    participatesInConnectionOverlay: true,
+    supportsSessionRestore: true,
+    supportsPathAutoDetect: true,
+    supportsPathValidation: true,
+  },
+  'codex-cli': {
+    participatesInConnectionOverlay: true,
+    supportsSessionRestore: true,
+    supportsPathAutoDetect: true,
+    supportsPathValidation: true,
+  },
+  iflow: {
+    participatesInConnectionOverlay: true,
+    supportsSessionRestore: true,
+    supportsPathAutoDetect: true,
+    supportsPathValidation: true,
+  },
+  gemini: {
+    participatesInConnectionOverlay: true,
+    supportsSessionRestore: true,
+    supportsPathAutoDetect: true,
+    supportsPathValidation: true,
+  },
+  'custom-cli': {
+    participatesInConnectionOverlay: false,
+    supportsSessionRestore: false,
+    supportsPathAutoDetect: false,
+    supportsPathValidation: false,
+    neutralPathValidationMessage: 'Custom CLI 支持手动输入并保存路径，此处不执行路径校验。',
+  },
+};
+
+export function getEngineCapabilities(engineId?: EngineId): EngineCapabilityConfig {
+  const resolvedEngineId = engineId ?? DEFAULT_ENGINE_ID;
+  return ENGINE_CAPABILITIES[resolvedEngineId] ?? ENGINE_CAPABILITIES[DEFAULT_ENGINE_ID];
+}
 
 export function getEngineLabel(engineId?: EngineId): string {
   if (!engineId) {

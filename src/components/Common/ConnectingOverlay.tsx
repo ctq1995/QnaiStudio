@@ -80,15 +80,16 @@ export function ConnectingOverlay() {
   const isFailed = connectionState === 'failed';
   const isCustomCli = currentEngine === 'custom-cli';
 
+  if (isCustomCli) {
+    return null;
+  }
+
   const handleRetry = async () => {
-    if (isCustomCli) {
-      return;
-    }
     await retryConnection();
   };
 
   const handlePathSubmit = async () => {
-    if (isCustomCli || !tempPath.trim()) {
+    if (!tempPath.trim()) {
       return;
     }
 

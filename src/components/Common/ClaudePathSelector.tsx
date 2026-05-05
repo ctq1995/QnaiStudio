@@ -67,7 +67,7 @@ async function validatePath(engineType: EngineType, path: string) {
     case 'gemini':
       return tauri.validateGeminiPath(path);
     case 'custom-cli':
-      return Promise.resolve({ valid: false, error: 'Custom CLI 仅提供编译兼容，不支持路径校验。', version: null });
+      return Promise.resolve({ valid: null, error: null, version: null });
     case 'claude-code':
     default:
       return tauri.validateClaudePath(path);
@@ -242,7 +242,7 @@ export function ClaudePathSelector({
 
           {validationError && <p className="text-xs text-danger">{validationError}</p>}
           {!isCustomCli && isValid === true && !compact && <p className="text-xs text-success">路径有效，可以正常使用。</p>}
-          {!compact && <p className="text-xs text-text-tertiary">{isCustomCli ? 'Custom CLI 仅提供编译兼容展示，不支持自动检测或成功校验。' : config.example}</p>}
+          {!compact && <p className="text-xs text-text-tertiary">{isCustomCli ? 'Custom CLI 支持手动输入并保存路径，此处不执行路径校验。' : config.example}</p>}
         </div>
       )}
 

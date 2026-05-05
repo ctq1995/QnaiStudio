@@ -148,8 +148,8 @@ function App() {
         const config = useConfigStore.getState().config;
         const defaultEngine = config?.defaultEngine || 'claude-code';
 
-        // 按需初始化 AI Engine Registry，只加载默认引擎
-        await bootstrapEngines(defaultEngine);
+        // 按需初始化 AI Engine Registry，只加载已支持的默认引擎
+        await bootstrapEngines(defaultEngine === 'custom-cli' ? 'claude-code' : defaultEngine);
 
         // 尝试从本地存储恢复聊天状态
         const restored = restoreFromStorage();

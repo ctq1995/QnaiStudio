@@ -7,6 +7,7 @@ export const ENGINE_LABELS: Record<EngineId, string> = {
   'codex-cli': 'Codex CLI',
   iflow: 'IFlow',
   gemini: 'Gemini CLI',
+  'custom-cli': 'Custom CLI',
 };
 
 export const ENGINE_VERSION_PREFIX_MAP: Record<EngineId, readonly string[]> = {
@@ -14,6 +15,7 @@ export const ENGINE_VERSION_PREFIX_MAP: Record<EngineId, readonly string[]> = {
   'codex-cli': ['Codex CLI', 'Codex'],
   iflow: ['IFlow'],
   gemini: ['Gemini CLI', 'Gemini'],
+  'custom-cli': ['Custom CLI', 'custom-cli'],
 };
 
 export function getEngineLabel(engineId?: EngineId): string {

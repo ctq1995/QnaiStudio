@@ -27,7 +27,7 @@ interface HistoryEntry {
   title: string
   timestamp: string
   messageCount: number
-  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli'
   workspaceId?: string | null
   workspacePath?: string | null
   data: {
@@ -42,7 +42,7 @@ export interface UnifiedHistoryItem {
   title: string
   timestamp: string
   messageCount: number
-  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+  engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli'
   source: 'local' | 'iflow' | 'claude-code-native'
   workspaceId?: string | null
   workspacePath?: string | null

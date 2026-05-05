@@ -10,7 +10,7 @@ interface SessionHistoryPanelProps {
   onClose?: () => void;
 }
 
-type HistoryFilter = 'all' | 'claude-code' | 'iflow' | 'codex-cli' | 'gemini';
+type HistoryFilter = 'all' | 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli';
 
 function formatTime(timestamp: string) {
   const date = new Date(timestamp);
@@ -76,6 +76,15 @@ function getEngineInfo(item: UnifiedHistoryItem) {
     };
   }
 
+  if (item.engineId === 'custom-cli') {
+    return {
+      name: 'Custom CLI',
+      color: 'text-amber-500',
+      badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
+      icon: Zap,
+    };
+  }
+
   return {
     name: 'Claude Code',
     color: 'text-blue-500',
@@ -133,10 +142,11 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
     void loadHistory();
   }, [currentWorkspace?.path, loadHistory]);
 
-  const handleRestore = async (sessionId: string, engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini') => {
+  const handleRestore = async (sessionId: string, engineId: 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli') => {
     setRestoring(sessionId);
     try {
-      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, engineId);
+      const restoreEngineId = engineId === 'custom-cli' ? 'claude-code' : engineId;
+      const success = await useEventChatStore.getState().restoreFromHistory(sessionId, restoreEngineId);
       if (success) {
         onClose?.();
         return;
@@ -224,6 +234,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
         <FilterButton active={filter === 'codex-cli'} label="Codex" onClick={() => setFilter('codex-cli')} />
         <FilterButton active={filter === 'iflow'} label="IFlow" onClick={() => setFilter('iflow')} />
         <FilterButton active={filter === 'gemini'} label="Gemini" onClick={() => setFilter('gemini')} />
+        <FilterButton active={filter === 'custom-cli'} label="Custom CLI" onClick={() => setFilter('custom-cli')} />
       </div>
 
       <div className="shrink-0 border-b border-border-subtle px-4 py-3">

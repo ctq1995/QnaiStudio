@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Wrench,
   Wifi,
   XCircle,
   type LucideIcon,
@@ -52,6 +53,7 @@ const ENGINE_ICON: Record<EngineId, LucideIcon> = {
   'codex-cli': Cpu,
   iflow: Cpu,
   gemini: Sparkles,
+  'custom-cli': Wrench,
 };
 
 const ENGINE_PATH_META: Record<EngineId, { title: string; label: string; placeholder?: string }> = {
@@ -59,6 +61,7 @@ const ENGINE_PATH_META: Record<EngineId, { title: string; label: string; placeho
   'codex-cli': { title: 'Codex CLI 路径', label: 'Codex CLI 命令路径', placeholder: 'codex' },
   iflow: { title: 'IFlow 路径', label: 'IFlow CLI 命令路径（可选）', placeholder: 'iflow' },
   gemini: { title: 'Gemini CLI 路径', label: 'Gemini CLI 命令路径', placeholder: 'gemini' },
+  'custom-cli': { title: 'Custom CLI 路径', label: 'Custom CLI 命令路径', placeholder: 'custom-cli' },
 };
 
 const ENGINE_MODEL_META: Record<EngineId, { placeholder: string; hint: string }> = {
@@ -66,6 +69,7 @@ const ENGINE_MODEL_META: Record<EngineId, { placeholder: string; hint: string }>
   'codex-cli': { placeholder: 'o4-mini', hint: '常用：o4-mini / gpt-4o / gpt-4.1' },
   iflow: { placeholder: '', hint: '指定使用的模型名称（如有）' },
   gemini: { placeholder: 'gemini-2.5-pro', hint: '常用：gemini-2.5-pro / gemini-2.0-flash' },
+  'custom-cli': { placeholder: '', hint: '可选：为自定义 CLI 记录展示用模型名称' },
 };
 
 /* ── Section card ── */

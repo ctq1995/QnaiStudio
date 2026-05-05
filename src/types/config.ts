@@ -3,7 +3,7 @@
  */
 
 /** AI 引擎 ID */
-export type EngineId = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini'
+export type EngineId = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli'
 
 /** AI 引擎配置 */
 export interface EngineConfig {
@@ -99,6 +99,9 @@ export interface Config {
     cliPath: string
     advanced?: GeminiAdvancedParams
   }
+  customCli: EngineRuntimeBinding & {
+    cliPath: string
+  }
   workDir?: string
   sessionDir?: string
   gitBinPath?: string
@@ -115,6 +118,8 @@ export interface HealthStatus {
   codexVersion?: string
   geminiAvailable: boolean
   geminiVersion?: string
+  customCliAvailable: boolean
+  customCliVersion?: string
   workDir?: string
   configValid: boolean
 }
@@ -128,6 +133,8 @@ export function getEngineAvailability(health: HealthStatus, engineId: EngineId):
       return health.codexAvailable
     case 'gemini':
       return health.geminiAvailable
+    case 'custom-cli':
+      return health.customCliAvailable
     case 'claude-code':
     default:
       return health.claudeAvailable
@@ -143,6 +150,8 @@ export function getEngineVersion(health: HealthStatus, engineId: EngineId): stri
       return health.codexVersion ?? 'Codex CLI 未连接'
     case 'gemini':
       return health.geminiVersion ?? 'Gemini CLI 未连接'
+    case 'custom-cli':
+      return health.customCliVersion ?? 'Custom CLI 未连接'
     case 'claude-code':
     default:
       return health.claudeVersion ?? 'Claude 未连接'

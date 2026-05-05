@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as tauri from '../../services/tauri';
 
-type EngineType = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini';
+type EngineType = 'claude-code' | 'iflow' | 'codex-cli' | 'gemini' | 'custom-cli';
 type InputMode = 'auto' | 'manual';
 
 interface ClaudePathSelectorProps {
@@ -35,6 +35,11 @@ const ENGINE_CONFIG: Record<EngineType, { name: string; placeholder: string; exa
     placeholder: '请输入 Gemini CLI 的完整路径',
     example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\gemini.cmd',
   },
+  'custom-cli': {
+    name: 'Custom CLI',
+    placeholder: '请输入 Custom CLI 的完整路径',
+    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\custom-cli.cmd',
+  },
 };
 
 async function detectPaths(engineType: EngineType): Promise<string[]> {
@@ -45,6 +50,8 @@ async function detectPaths(engineType: EngineType): Promise<string[]> {
       return tauri.findIFlowPaths();
     case 'gemini':
       return tauri.findGeminiPaths();
+    case 'custom-cli':
+      return Promise.resolve([]);
     case 'claude-code':
     default:
       return tauri.findClaudePaths();
@@ -59,6 +66,8 @@ async function validatePath(engineType: EngineType, path: string) {
       return tauri.validateIFlowPath(path);
     case 'gemini':
       return tauri.validateGeminiPath(path);
+    case 'custom-cli':
+      return Promise.resolve({ valid: true, error: null, version: null });
     case 'claude-code':
     default:
       return tauri.validateClaudePath(path);

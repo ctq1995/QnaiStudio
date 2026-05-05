@@ -40,6 +40,14 @@ const ENGINE_META: Record<
     findCmdUnix: 'which gemini',
     installHint: 'npm install -g @google/gemini-cli',
   },
+  'custom-cli': {
+    label: 'Custom CLI',
+    cliName: 'Custom CLI',
+    versionCmd: 'custom-cli --version',
+    findCmdWin: 'where custom-cli',
+    findCmdUnix: 'which custom-cli',
+    installHint: '请填写你的自定义 CLI 可执行文件路径',
+  },
 };
 
 function getCurrentCliPath(engineId: EngineId, config: ReturnType<typeof useConfigStore.getState>['config']) {
@@ -50,6 +58,8 @@ function getCurrentCliPath(engineId: EngineId, config: ReturnType<typeof useConf
       return config?.codexCli?.cliPath ?? '';
     case 'gemini':
       return config?.gemini?.cliPath ?? '';
+    case 'custom-cli':
+      return config?.customCli?.cliPath ?? '';
     case 'claude-code':
     default:
       return config?.claudeCode?.cliPath ?? '';

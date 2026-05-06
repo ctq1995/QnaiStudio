@@ -223,11 +223,11 @@ export function SettingsShell(props: SettingsShellProps) {
                   <span className="text-xs">菜单</span>
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-56 p-4">
-                <SheetHeader>
+              <SheetContent side="left" size="sm" className="p-0">
+                <SheetHeader className="px-4 py-4">
                   <SheetTitle>设置</SheetTitle>
                 </SheetHeader>
-                <div className="mt-4">{sidebarContent}</div>
+                <div className="px-3 py-4">{sidebarContent}</div>
               </SheetContent>
             </Sheet>
           </div>

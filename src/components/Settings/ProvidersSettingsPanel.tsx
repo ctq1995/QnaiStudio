@@ -253,9 +253,14 @@ export function ProvidersSettingsPanel({
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>删除服务商 "{provider.name}"？</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            删除后，绑定该服务商的引擎将失去默认模型来源。此操作不可撤销。
+                          <AlertDialogTitle>删除服务商？</AlertDialogTitle>
+                          <AlertDialogDescription className="space-y-3">
+                            <span className="block break-words rounded-lg border border-border-subtle bg-background-surface px-3 py-2 text-sm text-text-primary">
+                              {provider.name || '未命名服务商'}
+                            </span>
+                            <span className="block">
+                              删除后，绑定该服务商的引擎将失去默认模型来源。此操作不可撤销。
+                            </span>
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>

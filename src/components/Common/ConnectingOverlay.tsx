@@ -42,12 +42,12 @@ const ENGINE_META: Record<
     installHint: 'npm install -g @google/gemini-cli',
   },
   'custom-cli': {
-    label: 'Custom CLI',
-    cliName: 'Custom CLI',
-    versionCmd: 'custom-cli --version',
-    findCmdWin: 'where custom-cli',
-    findCmdUnix: 'which custom-cli',
-    installHint: '请填写你的自定义 CLI 可执行文件路径',
+    label: '内置 Agent',
+    cliName: '内置 Agent',
+    versionCmd: '',
+    findCmdWin: '',
+    findCmdUnix: '',
+    installHint: '内置 Agent 不需要本地 CLI 路径配置。',
   },
 };
 
@@ -136,7 +136,7 @@ export function ConnectingOverlay() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-border bg-background-surface px-4 py-3">
-                  <div className="font-medium text-text-primary">排查命令</div>
+                  <div className="font-medium text-text-primary">排查说明</div>
                   <div className="mt-2 space-y-1">
                     <div><code>{meta.versionCmd}</code></div>
                     <div><code>{meta.findCmdWin}</code></div>

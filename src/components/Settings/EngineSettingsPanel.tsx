@@ -227,7 +227,7 @@ function ConnectionTestButton({ engineId, config }: { engineId: EngineId; config
     <div className="space-y-3">
       <Button variant="outline" size="sm" onClick={handleTest} disabled={testing}>
         {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-        {testing ? '测试中...' : '测试连接'}
+        {testing ? (engineId === 'custom-cli' ? '校验中...' : '测试中...') : engineId === 'custom-cli' ? '校验状态' : '测试连接'}
       </Button>
       {result && (
         <div className={`rounded-lg border px-3 py-2 text-sm ${
@@ -241,7 +241,14 @@ function ConnectionTestButton({ engineId, config }: { engineId: EngineId; config
             ) : (
               <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
             )}
-            <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm font-mono">{result.message}</pre>
+            <div className="min-w-0 flex-1 space-y-1">
+              {engineId === 'custom-cli' && (
+                <div className="text-xs font-medium uppercase tracking-wide opacity-80">
+                  {result.success ? '内置 Agent 可用' : '内置 Agent 当前不可用'}
+                </div>
+              )}
+              <pre className="whitespace-pre-wrap break-words text-sm font-mono">{result.message}</pre>
+            </div>
           </div>
         </div>
       )}

@@ -56,7 +56,7 @@ export const ENGINE_CAPABILITIES: Record<EngineId, EngineCapabilityConfig> = {
     supportsSessionRestore: false,
     supportsPathAutoDetect: false,
     supportsPathValidation: false,
-    neutralPathValidationMessage: 'Custom CLI 支持手动输入并保存路径，此处不执行路径校验。',
+    neutralPathValidationMessage: '内置 Agent 不提供本地路径配置与校验。',
   },
 };
 

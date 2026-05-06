@@ -61,7 +61,7 @@ const ENGINE_PATH_META: Record<EngineId, { title: string; label: string; placeho
   'codex-cli': { title: 'Codex CLI 路径', label: 'Codex CLI 命令路径', placeholder: 'codex' },
   iflow: { title: 'IFlow 路径', label: 'IFlow CLI 命令路径（可选）', placeholder: 'iflow' },
   gemini: { title: 'Gemini CLI 路径', label: 'Gemini CLI 命令路径', placeholder: 'gemini' },
-  'custom-cli': { title: 'Custom CLI 路径', label: 'Custom CLI 命令路径', placeholder: 'custom-cli' },
+  'custom-cli': { title: '内置 Agent', label: '内置 Agent 运行配置' },
 };
 
 const ENGINE_MODEL_META: Record<EngineId, { placeholder: string; hint: string }> = {
@@ -593,27 +593,29 @@ export function EngineSettingsPanel(props: EngineSettingsPanelProps) {
         </div>
       </SettingsSection>
 
-      <SettingsSection
-        icon={FolderCog}
-        title={ENGINE_PATH_META[config.defaultEngine].title}
-        description="配置 CLI 路径。"
-      >
-        <div>
-          <div className="mb-1.5 flex items-center gap-2">
-            <label className="text-sm font-medium text-text-primary">
-              {ENGINE_PATH_META[config.defaultEngine].label}
-            </label>
-            {pathDirty && <Badge variant="warning">未保存</Badge>}
+      {config.defaultEngine !== 'custom-cli' && (
+        <SettingsSection
+          icon={FolderCog}
+          title={ENGINE_PATH_META[config.defaultEngine].title}
+          description="命令路径支持手动输入与自动检测。保存后会在工作区会话中使用。"
+        >
+          <div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <label className="text-sm font-medium text-text-primary">
+                {ENGINE_PATH_META[config.defaultEngine].label}
+              </label>
+              {pathDirty && <Badge variant="warning">未保存</Badge>}
+            </div>
+            <ClaudePathSelector
+              value={pathValue}
+              onChange={handlePathChange}
+              engineType={config.defaultEngine}
+              disabled={loading}
+              placeholder={ENGINE_PATH_META[config.defaultEngine].placeholder}
+            />
           </div>
-          <ClaudePathSelector
-            value={pathValue}
-            onChange={handlePathChange}
-            engineType={config.defaultEngine}
-            disabled={loading}
-            placeholder={ENGINE_PATH_META[config.defaultEngine].placeholder}
-          />
-        </div>
-      </SettingsSection>
+        </SettingsSection>
+      )}
 
       <SettingsSection icon={Link2} title="服务商与模型" description="设置服务商和模型。">
         <EngineParamsEditor

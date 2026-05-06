@@ -21,6 +21,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 export const ENGINE_OPTIONS: { id: EngineId; name: string; description: string }[] = [
   { id: 'claude-code', name: 'Claude Code', description: 'Anthropic 官方 CLI 工具' },
   { id: 'codex-cli', name: 'Codex CLI', description: 'OpenAI 官方 Codex CLI 工具' },
+  { id: 'custom-cli', name: '内置 Agent', description: '基于内置自研 Agent 能力运行，使用所选服务商与模型' },
   { id: 'iflow', name: 'IFlow', description: '智能编程助手 CLI 工具' },
   { id: 'gemini', name: 'Gemini CLI', description: 'Google 官方 Gemini CLI 工具' },
 ];

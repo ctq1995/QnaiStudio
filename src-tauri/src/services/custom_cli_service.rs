@@ -1,15 +1,11 @@
-use crate::commands::chat::utils::{emit_chat_event, remove_session_runtime, remove_stdin_handle};
 use crate::error::{AppError, Result};
 use crate::models::config::Config;
 use crate::models::events::StreamEvent;
 use crate::services::custom_cli_protocol::{CustomCliEventEnvelope, CustomCliRequest};
 use crate::utils::encoding::decode_cli_line;
-use crate::SessionRuntime;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -28,6 +24,11 @@ pub struct CustomCliRequestBuilder {
     session_id: String,
     message: String,
     system_prompt: Option<String>,
+}
+
+pub enum CustomCliStreamItem {
+    Event(Value),
+    SessionEnd,
 }
 
 impl CustomCliRequestBuilder {
@@ -122,21 +123,18 @@ impl CustomCliService {
             .map_err(|error| AppError::ProcessError(format!("flush custom-cli stdin 失败: {}", error)))
     }
 
-    pub fn forward_stdout_events(
-        child: Child,
-        session_id: String,
-        window: tauri::Window,
-        sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
-        stdin_handles: Arc<Mutex<HashMap<String, ChildStdin>>>,
-    ) {
+    pub fn forward_stdout_events<F, G>(child: Child, mut on_event: F, mut on_exit: G)
+    where
+        F: FnMut(CustomCliStreamItem) + Send + 'static,
+        G: FnMut() + Send + 'static,
+    {
         std::thread::spawn(move || {
             let mut child = child;
             let stdout = match child.stdout.take() {
                 Some(stdout) => stdout,
                 None => {
-                    emit_chat_event(&window, error_event("无法获取 custom-cli stdout"), &session_id);
-                    let _ = remove_session_runtime(&sessions, &session_id);
-                    remove_stdin_handle(&stdin_handles, &session_id);
+                    on_event(CustomCliStreamItem::Event(error_event("无法获取 custom-cli stdout")));
+                    on_exit();
                     return;
                 }
             };
@@ -145,13 +143,12 @@ impl CustomCliService {
                 spawn_stderr_reader(stderr);
             }
 
-            let emitted_session_end = read_stdout_events(stdout, &window, &session_id);
+            let emitted_session_end = read_stdout_events(stdout, &mut on_event);
             let _ = child.wait();
             if !emitted_session_end {
-                emit_chat_event(&window, session_end_event(), &session_id);
+                on_event(CustomCliStreamItem::SessionEnd);
             }
-            let _ = remove_session_runtime(&sessions, &session_id);
-            remove_stdin_handle(&stdin_handles, &session_id);
+            on_exit();
         });
     }
 }
@@ -177,7 +174,10 @@ fn spawn_stderr_reader(stderr: impl std::io::Read + Send + 'static) {
     });
 }
 
-fn read_stdout_events(stdout: ChildStdout, window: &tauri::Window, session_id: &str) -> bool {
+fn read_stdout_events<F>(stdout: ChildStdout, on_event: &mut F) -> bool
+where
+    F: FnMut(CustomCliStreamItem),
+{
     let mut reader = BufReader::new(stdout);
     let mut buffer = Vec::new();
     let mut emitted_session_end = false;
@@ -187,7 +187,7 @@ fn read_stdout_events(stdout: ChildStdout, window: &tauri::Window, session_id: &
         let bytes_read = match reader.read_until(b'\n', &mut buffer) {
             Ok(size) => size,
             Err(error) => {
-                emit_chat_event(window, error_event(&format!("读取 custom-cli stdout 失败: {}", error)), session_id);
+                on_event(CustomCliStreamItem::Event(error_event(&format!("读取 custom-cli stdout 失败: {}", error))));
                 break;
             }
         };
@@ -205,7 +205,7 @@ fn read_stdout_events(stdout: ChildStdout, window: &tauri::Window, session_id: &
         if event.get("type") == Some(&Value::String("session_end".to_string())) {
             emitted_session_end = true;
         }
-        emit_chat_event(window, event, session_id);
+        on_event(CustomCliStreamItem::Event(event));
     }
 
     emitted_session_end

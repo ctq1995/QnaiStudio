@@ -1,7 +1,7 @@
 use super::{ChatContext, ContinueChatArgs, StartChatArgs};
-use crate::commands::chat::utils::register_session_runtime;
+use crate::commands::chat::utils::{emit_chat_event, register_session_runtime, remove_session_runtime, remove_stdin_handle};
 use crate::error::{AppError, Result};
-use crate::services::custom_cli_service::CustomCliService;
+use crate::services::custom_cli_service::{CustomCliService, CustomCliStreamItem};
 use uuid::Uuid;
 
 pub async fn start_custom_cli_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Result<String> {
@@ -19,12 +19,29 @@ pub async fn start_custom_cli_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) 
         handles.insert(session_id.clone(), stdin);
     }
 
+    let window = ctx.window.clone();
+    let sessions = std::sync::Arc::clone(&ctx.state.sessions);
+    let stdin_handles = std::sync::Arc::clone(&ctx.state.stdin_handles);
+    let event_session_id = session_id.clone();
+    let cleanup_session_id = session_id.clone();
+
     CustomCliService::forward_stdout_events(
         spawn_result.child,
-        session_id.clone(),
-        ctx.window.clone(),
-        std::sync::Arc::clone(&ctx.state.sessions),
-        std::sync::Arc::clone(&ctx.state.stdin_handles),
+        move |item| match item {
+            CustomCliStreamItem::Event(event) => emit_chat_event(&window, event, &event_session_id),
+            CustomCliStreamItem::SessionEnd => emit_chat_event(
+                &window,
+                serde_json::json!({
+                    "type": "session_end",
+                    "reason": "completed",
+                }),
+                &event_session_id,
+            ),
+        },
+        move || {
+            let _ = remove_session_runtime(&sessions, &cleanup_session_id);
+            remove_stdin_handle(&stdin_handles, &cleanup_session_id);
+        },
     );
 
     Ok(session_id)

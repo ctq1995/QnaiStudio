@@ -98,23 +98,20 @@ export class CustomCliSession extends BaseSession {
       }
 
       const payloadSessionId = payload.session_id
-      if (payloadSessionId && !this.backendSessionId) {
-        this.backendSessionId = payloadSessionId
-      }
-
-      if (!payloadSessionId || payloadSessionId === this.id || payloadSessionId === this.backendSessionId) {
+      if (!payloadSessionId || payloadSessionId === this.backendSessionId) {
         this.handleTauriEvent(payload)
       }
     })
   }
 
   private async startCustomCliProcess(task: AITask): Promise<void> {
-    await this.gateway.startChat({
+    const backendSessionId = await this.gateway.startChat({
       message: task.input.prompt,
       sessionId: this.backendSessionId ?? this.id,
       workDir: this.config.workspaceDir,
       engineId: 'custom-cli',
     })
+    this.backendSessionId = backendSessionId
   }
 
   private handleTauriEvent(event: CustomCliChatEvent): void {

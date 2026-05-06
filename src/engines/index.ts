@@ -46,7 +46,7 @@ export function getEngineDescriptors(): EngineDescriptor[] {
       id: 'custom-cli',
       name: 'Custom CLI',
       description: '预留给自定义命令行引擎的占位注册',
-      available: true,
+      available: false,
     },
     {
       id: 'iflow',

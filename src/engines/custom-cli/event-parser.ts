@@ -41,6 +41,14 @@ export class CustomCliEventParser extends BaseEventParser<CustomCliStreamEvent> 
         break
       }
 
+      case 'system': {
+        if (event.subtype === 'progress') {
+          const message = typeof event.message === 'string' ? event.message : undefined
+          results.push(createProgressEvent(message))
+        }
+        break
+      }
+
       case 'tool_start': {
         const toolName = getToolName(event)
         const toolId = getToolId(event)

@@ -60,7 +60,7 @@ export class CustomCliSession extends BaseSession {
 
     return createEventIterable(
       this.eventEmitter,
-      (event) => event.type === 'session_end' || event.type === 'error',
+      (event) => event.type === 'session_end',
     )
   }
 

@@ -14,7 +14,9 @@ export { GeminiEventParser, convertGeminiEventsToAIEvents } from './gemini/event
 export type { GeminiStreamEvent } from './gemini/event-parser'
 
 export function getAvailableEngineIds(): string[] {
-  return ['claude-code', 'codex-cli', 'custom-cli', 'iflow', 'gemini']
+  return getEngineDescriptors()
+    .filter((descriptor) => descriptor.available)
+    .map((descriptor) => descriptor.id)
 }
 
 export function getDefaultEngineId(): string {

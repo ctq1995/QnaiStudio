@@ -1,21 +1,18 @@
 import type { AISessionConfig, AITask, AIEvent } from '../../ai-runtime'
 import { BaseSession, createEventIterable } from '../../ai-runtime/base'
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { CustomCliEventParser, type CustomCliStreamEvent } from './event-parser'
+import {
+  tauriCustomCliGateway,
+  type CustomCliChatEvent,
+  type CustomCliGateway,
+} from './gateway'
 
 export interface CustomCliSessionConfig extends AISessionConfig {
   customCliPath?: string
   workspacePath?: string
 }
 
-interface TauriChatEvent {
-  type: string
-  session_id?: string
-  [key: string]: unknown
-}
-
-function toStreamEvent(event: TauriChatEvent): CustomCliStreamEvent {
+function toStreamEvent(event: CustomCliChatEvent): CustomCliStreamEvent {
   const streamEvent: CustomCliStreamEvent = { type: event.type }
 
   for (const [key, value] of Object.entries(event)) {
@@ -40,8 +37,9 @@ export class CustomCliSession extends BaseSession {
   private currentTaskId: string | null = null
   private backendSessionId: string | null = null
   private unlistenChatEvent: (() => void) | null = null
+  private readonly gateway: CustomCliGateway
 
-  constructor(id: string, config?: CustomCliSessionConfig) {
+  constructor(id: string, config?: CustomCliSessionConfig, gateway: CustomCliGateway = tauriCustomCliGateway) {
     super({ id, config })
     this.config = {
       workspaceDir: config?.workspacePath,
@@ -50,6 +48,7 @@ export class CustomCliSession extends BaseSession {
       customCliPath: config?.customCliPath,
       options: config?.options,
     }
+    this.gateway = gateway
     this.parser = new CustomCliEventParser(id)
   }
 
@@ -69,7 +68,7 @@ export class CustomCliSession extends BaseSession {
       return
     }
 
-    invoke('interrupt_chat', { payload: { sessionId: this.backendSessionId ?? this.id } })
+    this.gateway.interruptChat(this.backendSessionId ?? this.id)
       .catch((error) => {
         console.error('[CustomCliSession] Failed to abort:', error)
       })
@@ -93,8 +92,7 @@ export class CustomCliSession extends BaseSession {
       return
     }
 
-    this.unlistenChatEvent = await listen<unknown>('chat-event', (event) => {
-      const payload = parseTauriChatEvent(event.payload)
+    this.unlistenChatEvent = await this.gateway.listenChatEvent((payload) => {
       if (!payload) {
         return
       }
@@ -111,17 +109,15 @@ export class CustomCliSession extends BaseSession {
   }
 
   private async startCustomCliProcess(task: AITask): Promise<void> {
-    await invoke('start_chat', {
-      payload: {
-        message: task.input.prompt,
-        sessionId: this.backendSessionId ?? this.id,
-        workDir: this.config.workspaceDir,
-        engineId: 'custom-cli',
-      },
+    await this.gateway.startChat({
+      message: task.input.prompt,
+      sessionId: this.backendSessionId ?? this.id,
+      workDir: this.config.workspaceDir,
+      engineId: 'custom-cli',
     })
   }
 
-  private handleTauriEvent(event: TauriChatEvent): void {
+  private handleTauriEvent(event: CustomCliChatEvent): void {
     const aiEvents = this.parser.parse(toStreamEvent(event))
     for (const aiEvent of aiEvents) {
       this.emit(aiEvent)
@@ -133,30 +129,11 @@ export class CustomCliSession extends BaseSession {
       throw new Error('[CustomCliSession] Session has been disposed')
     }
 
-    await invoke('continue_chat', {
-      payload: {
-        sessionId: this.backendSessionId ?? this.id,
-        message: prompt,
-        engineId: 'custom-cli',
-      },
+    await this.gateway.continueChat({
+      sessionId: this.backendSessionId ?? this.id,
+      message: prompt,
+      engineId: 'custom-cli',
     })
     this._status = 'running'
   }
-}
-
-function parseTauriChatEvent(payload: unknown): TauriChatEvent | null {
-  if (typeof payload === 'string') {
-    try {
-      return JSON.parse(payload) as TauriChatEvent
-    } catch (error) {
-      console.error('[CustomCliSession] Failed to parse payload string:', error)
-      return null
-    }
-  }
-
-  if (payload && typeof payload === 'object') {
-    return payload as TauriChatEvent
-  }
-
-  return null
 }

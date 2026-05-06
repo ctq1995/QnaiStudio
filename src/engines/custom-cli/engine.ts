@@ -9,6 +9,7 @@ import {
   CustomCliSession,
   type CustomCliSessionConfig,
 } from './session'
+import { probeCustomCliAvailability, tauriCustomCliGateway } from './gateway'
 
 export interface CustomCliEngineConfig {
   customCliPath?: string
@@ -23,6 +24,7 @@ export class CustomCliEngine implements AIEngine {
   private readonly config: CustomCliEngineConfig
   private readonly sessions = new Map<string, CustomCliSession>()
   private sessionCounter = 0
+  private available = false
 
   constructor(config?: CustomCliEngineConfig) {
     this.config = config || {}
@@ -60,11 +62,13 @@ export class CustomCliEngine implements AIEngine {
   }
 
   async isAvailable(): Promise<boolean> {
-    return true
+    this.available = await probeCustomCliAvailability(tauriCustomCliGateway)
+    return this.available
   }
 
   async initialize(): Promise<boolean> {
-    return true
+    this.available = await this.isAvailable()
+    return this.available
   }
 
   cleanup(): void {

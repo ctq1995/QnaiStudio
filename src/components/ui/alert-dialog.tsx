@@ -45,19 +45,28 @@ function AlertDialogOverlay({
   )
 }
 
+const alertDialogSizeClasses = {
+  compact: "max-w-sm",
+  confirm: "max-w-md",
+} as const
+
 function AlertDialogContent({
   className,
+  size = "confirm",
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+}: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
+  size?: keyof typeof alertDialogSizeClasses
+}) {
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
         className={cn(
-          "fixed left-[50%] top-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg",
+          "fixed left-[50%] top-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-xl border shadow-lg",
           "border-border-default bg-background-elevated text-text-primary",
           "duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+          alertDialogSizeClasses[size],
           className
         )}
         {...props}
@@ -73,7 +82,7 @@ function AlertDialogHeader({
   return (
     <div
       data-slot="alert-dialog-header"
-      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
+      className={cn("flex flex-col gap-2 px-6 pt-6 text-center sm:text-left", className)}
       {...props}
     />
   )
@@ -86,7 +95,10 @@ function AlertDialogFooter({
   return (
     <div
       data-slot="alert-dialog-footer"
-      className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)}
+      className={cn(
+        "flex flex-col-reverse gap-2 border-t border-border-subtle px-6 py-4 sm:flex-row sm:justify-end",
+        className
+      )}
       {...props}
     />
   )
@@ -112,7 +124,7 @@ function AlertDialogDescription({
   return (
     <AlertDialogPrimitive.Description
       data-slot="alert-dialog-description"
-      className={cn("text-sm text-text-muted", className)}
+      className={cn("text-sm leading-6 text-text-muted", className)}
       {...props}
     />
   )

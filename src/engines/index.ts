@@ -4,6 +4,7 @@
 
 export * from './claude-code'
 export * from './codex-cli'
+export * from './custom-cli'
 export * from './iflow'
 export { GeminiEngine, getGeminiEngine, resetGeminiEngine } from './gemini/engine'
 export type { GeminiEngineConfig } from './gemini/engine'
@@ -13,7 +14,7 @@ export { GeminiEventParser, convertGeminiEventsToAIEvents } from './gemini/event
 export type { GeminiStreamEvent } from './gemini/event-parser'
 
 export function getAvailableEngineIds(): string[] {
-  return ['claude-code', 'codex-cli', 'iflow', 'gemini']
+  return ['claude-code', 'codex-cli', 'custom-cli', 'iflow', 'gemini']
 }
 
 export function getDefaultEngineId(): string {
@@ -39,6 +40,12 @@ export function getEngineDescriptors(): EngineDescriptor[] {
       id: 'codex-cli',
       name: 'Codex CLI',
       description: 'OpenAI 官方 Codex CLI',
+      available: true,
+    },
+    {
+      id: 'custom-cli',
+      name: 'Custom CLI',
+      description: '预留给自定义命令行引擎的占位注册',
       available: true,
     },
     {

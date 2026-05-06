@@ -7,8 +7,9 @@ import { ClaudeCodeEngine } from '../engines/claude-code'
 import { CodexCliEngine } from '../engines/codex-cli'
 import { IFlowEngine } from '../engines/iflow'
 import { GeminiEngine } from '../engines/gemini'
+import { CustomCliEngine } from '../engines/custom-cli'
 
-export const REGISTERED_ENGINE_IDS = ['claude-code', 'codex-cli', 'iflow', 'gemini'] as const
+export const REGISTERED_ENGINE_IDS = ['claude-code', 'codex-cli', 'custom-cli', 'iflow', 'gemini'] as const
 export type EngineId = typeof REGISTERED_ENGINE_IDS[number]
 
 function createEngine(engineId: EngineId) {
@@ -19,6 +20,8 @@ function createEngine(engineId: EngineId) {
       return new IFlowEngine()
     case 'gemini':
       return new GeminiEngine()
+    case 'custom-cli':
+      return new CustomCliEngine()
     case 'claude-code':
     default:
       return new ClaudeCodeEngine()

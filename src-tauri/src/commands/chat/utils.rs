@@ -104,6 +104,16 @@ pub fn remove_session_runtime(
     Some(runtime)
 }
 
+pub fn remove_stdin_handle(
+    stdin_handles: &Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
+    session_id: &str,
+) -> bool {
+    if let Ok(mut handles) = stdin_handles.lock() {
+        return handles.remove(session_id).is_some();
+    }
+    false
+}
+
 pub fn terminate_process(pid: u32) {
     #[cfg(windows)]
     {

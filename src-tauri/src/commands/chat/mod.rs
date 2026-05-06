@@ -134,6 +134,7 @@ pub async fn interrupt_chat(
     let session_id = payload.session_id;
     let pid_opt = utils::resolve_session_pid(&state.sessions, &session_id);
     let _ = utils::remove_session_runtime(&state.sessions, &session_id);
+    utils::remove_stdin_handle(&state.stdin_handles, &session_id);
 
     if let Some(pid) = pid_opt {
         utils::terminate_process(pid);

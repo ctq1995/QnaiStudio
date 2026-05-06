@@ -1,4 +1,4 @@
-use crate::commands::chat::utils::{emit_chat_event, remove_session_runtime};
+use crate::commands::chat::utils::{emit_chat_event, remove_session_runtime, remove_stdin_handle};
 use crate::error::{AppError, Result};
 use crate::models::config::Config;
 use crate::models::events::StreamEvent;
@@ -127,6 +127,7 @@ impl CustomCliService {
         session_id: String,
         window: tauri::Window,
         sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
+        stdin_handles: Arc<Mutex<HashMap<String, ChildStdin>>>,
     ) {
         std::thread::spawn(move || {
             let mut child = child;
@@ -135,6 +136,7 @@ impl CustomCliService {
                 None => {
                     emit_chat_event(&window, error_event("无法获取 custom-cli stdout"), &session_id);
                     let _ = remove_session_runtime(&sessions, &session_id);
+                    remove_stdin_handle(&stdin_handles, &session_id);
                     return;
                 }
             };
@@ -149,6 +151,7 @@ impl CustomCliService {
                 emit_chat_event(&window, session_end_event(), &session_id);
             }
             let _ = remove_session_runtime(&sessions, &session_id);
+            remove_stdin_handle(&stdin_handles, &session_id);
         });
     }
 }

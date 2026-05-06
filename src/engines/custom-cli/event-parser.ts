@@ -80,9 +80,7 @@ export class CustomCliEventParser extends BaseEventParser<CustomCliStreamEvent> 
         break
       }
 
-      case 'session_end':
-      case 'complete':
-      case 'done': {
+      case 'session_end': {
         results.push(createSessionEndEvent(this.sessionId))
         break
       }

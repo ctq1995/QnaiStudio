@@ -29,9 +29,9 @@ export class CustomCliEngine implements AIEngine {
     this.capabilities = createCapabilities({
       supportedTaskKinds: ['chat', 'refactor', 'analyze', 'generate'],
       supportsStreaming: true,
-      supportsConcurrentSessions: true,
+      supportsConcurrentSessions: false,
       supportsTaskAbort: true,
-      maxConcurrentSessions: 0,
+      maxConcurrentSessions: 1,
       description: 'Custom CLI - 待接入的自定义命令行引擎',
       version: '0.1.0',
     })

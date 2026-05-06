@@ -46,6 +46,15 @@ export class CustomCliEngine implements AIEngine {
     }
 
     const session = new CustomCliSession(sessionId, sessionConfig)
+    session.onEvent((event) => {
+      if (event.type === 'session_end') {
+        setTimeout(() => {
+          if (session.status === 'idle') {
+            this.sessions.delete(sessionId)
+          }
+        }, 5000)
+      }
+    })
     this.sessions.set(sessionId, session)
     return session
   }

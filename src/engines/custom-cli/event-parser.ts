@@ -53,6 +53,9 @@ export class CustomCliEventParser extends BaseEventParser<CustomCliStreamEvent> 
         const toolName = getToolName(event)
         const toolId = getToolId(event)
         const input = getToolInput(event)
+        if (toolId) {
+          this.toolCallManager.startToolCall(toolName, toolId, input)
+        }
         results.push(createProgressEvent(`调用工具: ${toolName}`))
         results.push(createToolCallStartEvent(toolName, input, toolId))
         break
@@ -63,6 +66,9 @@ export class CustomCliEventParser extends BaseEventParser<CustomCliStreamEvent> 
         const toolId = getToolId(event)
         const output = event.output ?? event.result
         const success = event.success !== false
+        if (toolId) {
+          this.toolCallManager.endToolCall(toolId, output, success)
+        }
         results.push(createProgressEvent(`${success ? '工具完成' : '工具失败'}: ${toolName}`))
         results.push(createToolCallEndEvent(toolName, output, success, toolId))
         break

@@ -93,14 +93,15 @@ export class CustomCliSession extends BaseSession {
     }
 
     this.unlistenChatEvent = await this.gateway.listenChatEvent((payload) => {
-      if (!payload) {
+      if (!payload || !this.backendSessionId) {
         return
       }
 
-      const payloadSessionId = payload.session_id
-      if (!payloadSessionId || payloadSessionId === this.backendSessionId) {
-        this.handleTauriEvent(payload)
+      if (payload.session_id !== this.backendSessionId) {
+        return
       }
+
+      this.handleTauriEvent(payload)
     })
   }
 

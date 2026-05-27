@@ -96,8 +96,7 @@ fn execute_read_file(input: &serde_json::Value, work_dir: Option<&Path>) -> Resu
         .get("path")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("read_file 缺少 path".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let full_path = work_dir.join(path);
+    let full_path = resolve_workspace_path(work_dir, path, false)?;
     std::fs::read_to_string(&full_path)
         .map_err(|error| AppError::Unknown(format!("读取文件失败: {}", error)))
 }
@@ -115,8 +114,7 @@ fn execute_read_file_range(input: &serde_json::Value, work_dir: Option<&Path>) -
         .get("end_line")
         .and_then(|value| value.as_u64())
         .ok_or_else(|| AppError::Unknown("read_file_range 缺少 end_line".to_string()))? as usize;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let full_path = work_dir.join(path);
+    let full_path = resolve_workspace_path(work_dir, path, false)?;
     let content = std::fs::read_to_string(&full_path)
         .map_err(|error| AppError::Unknown(format!("读取文件失败: {}", error)))?;
     let lines: Vec<&str> = content.lines().collect();
@@ -130,12 +128,11 @@ fn execute_glob_files(input: &serde_json::Value, work_dir: Option<&Path>) -> Res
         .get("pattern")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("glob_files 缺少 pattern".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let base_path = input
-        .get("base_path")
-        .and_then(|value| value.as_str())
-        .map(|p| work_dir.join(p))
-        .unwrap_or_else(|| work_dir.to_path_buf());
+    let base_path = if let Some(base_path) = input.get("base_path").and_then(|value| value.as_str()) {
+        resolve_workspace_path(work_dir, base_path, false)?
+    } else {
+        canonicalize_workspace(work_dir)?
+    };
     
     let mut results = Vec::new();
     fn collect_files(dir: &Path, pattern: &str, results: &mut Vec<String>) {
@@ -161,7 +158,11 @@ fn execute_search_in_files(input: &serde_json::Value, work_dir: Option<&Path>) -
         .get("query")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("search_in_files 缺少 query".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
+    let base_path = if let Some(base_path) = input.get("base_path").and_then(|value| value.as_str()) {
+        resolve_workspace_path(work_dir, base_path, false)?
+    } else {
+        canonicalize_workspace(work_dir)?
+    };
     let max_results = input
         .get("max_results")
         .and_then(|value| value.as_u64())
@@ -192,12 +193,11 @@ fn execute_search_in_files(input: &serde_json::Value, work_dir: Option<&Path>) -
             }
         }
     }
-    walk_dir(work_dir, query, &mut results, max_results);
+    walk_dir(&base_path, query, &mut results, max_results);
     Ok(results.join("\n"))
 }
 
 fn execute_get_diagnostics(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<String> {
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
     let paths = input.get("paths").and_then(|v| v.as_array());
     
     // 简化实现：检查文件是否存在并返回基本信息
@@ -206,8 +206,7 @@ fn execute_get_diagnostics(input: &serde_json::Value, work_dir: Option<&Path>) -
     if let Some(paths) = paths {
         for p in paths {
             if let Some(path_str) = p.as_str() {
-                let full_path = work_dir.join(path_str);
-                if !full_path.exists() {
+                if resolve_workspace_path(work_dir, path_str, false).is_err() {
                     results.push(json!({
                         "path": path_str,
                         "severity": "error",
@@ -235,13 +234,17 @@ fn execute_git_status(_: &serde_json::Value, work_dir: Option<&Path>) -> Result<
 }
 
 fn execute_git_diff(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<String> {
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
+    let work_dir = canonicalize_workspace(work_dir)?;
     let path = input.get("path").and_then(|value| value.as_str());
     
     let mut cmd = std::process::Command::new("git");
-    cmd.arg("diff").current_dir(work_dir);
+    cmd.arg("diff").current_dir(&work_dir);
     if let Some(p) = path {
-        cmd.arg("--").arg(p);
+        let full_path = resolve_workspace_path(Some(&work_dir), p, false)?;
+        let relative_path = full_path
+            .strip_prefix(&work_dir)
+            .map_err(|_| AppError::InvalidPath("目标路径超出工作区".to_string()))?;
+        cmd.arg("--").arg(relative_path);
     }
     let output = cmd.output()
         .map_err(|error| AppError::Unknown(format!("git diff 执行失败: {}", error)))?;
@@ -278,8 +281,7 @@ fn execute_apply_patch(input: &serde_json::Value, work_dir: Option<&Path>) -> Re
         .get("edits")
         .and_then(|value| value.as_array())
         .ok_or_else(|| AppError::Unknown("apply_patch 缺少 edits".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let full_path = work_dir.join(path);
+    let full_path = resolve_workspace_path(work_dir, path, false)?;
     
     let mut content = std::fs::read_to_string(&full_path)
         .map_err(|error| AppError::Unknown(format!("读取文件失败: {}", error)))?;
@@ -349,8 +351,11 @@ fn execute_grep(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<St
         .get("pattern")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("grep 缺少 pattern".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
+    let base_path = canonicalize_workspace(work_dir)?;
     let path_glob = input.get("path").and_then(|v| v.as_str()).unwrap_or("**/*");
+    if !path_glob.contains('*') {
+        let _ = resolve_workspace_path(work_dir, path_glob, false)?;
+    }
     let case_insensitive = input.get("i").and_then(|v| v.as_bool()).unwrap_or(false);
     let context_lines = input.get("C").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let max_results = input.get("head_limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
@@ -401,7 +406,7 @@ fn execute_grep(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<St
         }
     }
     
-    walk_dir(work_dir, path_glob, &re, context_lines, max_results, &mut results);
+    walk_dir(&base_path, path_glob, &re, context_lines, max_results, &mut results);
     if results.is_empty() {
         Ok("No matches found".to_string())
     } else {
@@ -410,7 +415,7 @@ fn execute_grep(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<St
 }
 
 fn execute_list_tree(input: &serde_json::Value, work_dir: Option<&Path>) -> Result<String> {
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
+    let work_dir = canonicalize_workspace(work_dir)?;
     let depth = input.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
     let max_files = input.get("max_files").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
     
@@ -441,7 +446,7 @@ fn execute_list_tree(input: &serde_json::Value, work_dir: Option<&Path>) -> Resu
     
     let mut count = 0;
     results.push(format!("{}/", work_dir.file_name().and_then(|n| n.to_str()).unwrap_or("workspace")));
-    walk(work_dir, "  ".to_string(), depth, max_files, &mut count, &mut results);
+    walk(&work_dir, "  ".to_string(), depth, max_files, &mut count, &mut results);
     Ok(results.join("\n"))
 }
 
@@ -525,8 +530,7 @@ fn execute_edit_file(input: &serde_json::Value, work_dir: Option<&Path>) -> Resu
         .get("new_string")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("edit_file 缺少 new_string".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let full_path = work_dir.join(path);
+    let full_path = resolve_workspace_path(work_dir, path, false)?;
     
     let content = std::fs::read_to_string(&full_path)
         .map_err(|error| AppError::Unknown(format!("读取文件失败: {}", error)))?;
@@ -556,8 +560,7 @@ fn execute_write_file(input: &serde_json::Value, work_dir: Option<&Path>) -> Res
         .get("content")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("write_file 缺少 content".to_string()))?;
-    let work_dir = work_dir.ok_or_else(|| AppError::Unknown("缺少工作区目录".to_string()))?;
-    let full_path = work_dir.join(path);
+    let full_path = resolve_workspace_path(work_dir, path, false)?;
     
     // Create parent directories if needed
     if let Some(parent) = full_path.parent() {

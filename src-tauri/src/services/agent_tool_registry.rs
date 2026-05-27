@@ -560,9 +560,7 @@ fn execute_write_file(input: &serde_json::Value, work_dir: Option<&Path>) -> Res
         .get("content")
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::Unknown("write_file 缺少 content".to_string()))?;
-    let full_path = resolve_workspace_path(work_dir, path, false)?;
-    
-    // Create parent directories if needed
+    let full_path = resolve_workspace_path(work_dir, path, true)?;
     if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| AppError::Unknown(format!("创建目录失败: {}", error)))?;
@@ -1098,6 +1096,35 @@ mod tests {
         let result = resolve_workspace_path(Some(&workspace), outside_file.to_str().unwrap(), true);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_file_tool_rejects_parent_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let input = serde_json::json!({ "path": "../secret.txt" });
+
+        let result = super::execute_tool("read_file", &input, Some(&workspace));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_file_tool_rejects_absolute_path_outside_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        fs::create_dir_all(&workspace).unwrap();
+        let input = serde_json::json!({
+            "path": outside.to_str().unwrap(),
+            "content": "secret"
+        });
+
+        let result = super::execute_tool("write_file", &input, Some(&workspace));
+
+        assert!(result.is_err());
+        assert!(!outside.exists());
     }
 
     #[test]

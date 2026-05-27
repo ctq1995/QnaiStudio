@@ -18,7 +18,7 @@ export interface CustomCliEngineConfig {
 
 export class CustomCliEngine implements AIEngine {
   readonly id = 'custom-cli'
-  readonly name = 'Custom CLI'
+  readonly name = '内置 Agent'
   readonly capabilities: EngineCapabilities
 
   private readonly config: CustomCliEngineConfig
@@ -34,7 +34,7 @@ export class CustomCliEngine implements AIEngine {
       supportsConcurrentSessions: false,
       supportsTaskAbort: true,
       maxConcurrentSessions: 1,
-      description: 'Custom CLI - 待接入的自定义命令行引擎',
+      description: '内置 Agent 引擎',
       version: '0.1.0',
     })
   }

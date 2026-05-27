@@ -3042,7 +3042,7 @@ export type StreamEvent =
 
   | { type: 'session_start'; sessionId: string }
 
-  | { type: 'session_end'; sessionId: string; reason?: 'completed' | 'aborted' | 'error' }
+  | { type: 'session_end'; sessionId?: string; reason?: 'completed' | 'aborted' | 'error' | string }
 
 
 
@@ -3172,7 +3172,7 @@ export type StreamEvent =
 
 
 
-  | { type: 'permission_request'; sessionId: string; denials: PermissionDenial[] }
+  | { type: 'permission_request'; sessionId: string; engineId?: string; summary?: string; responseHint?: string; denials: PermissionDenial[] }
 
 
 
@@ -5935,7 +5935,7 @@ export interface AssistantChatMessage extends BaseChatMessage {
   } | null;
 
   inlineStatus?: {
-    kind: 'reconnecting' | 'error';
+    kind: 'reconnecting' | 'error' | 'permission_pending' | 'completed' | 'aborted';
     summary: string;
     detail: string;
   } | null;

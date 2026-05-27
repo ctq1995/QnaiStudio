@@ -57,6 +57,10 @@ pub enum AppError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    /// 命令执行错误
+    #[error("Command error: {0}")]
+    CommandError(String),
+
     /// 超时
     #[error("Operation timed out")]
     Timeout,
@@ -79,6 +83,7 @@ impl AppError {
             AppError::SessionNotFound(id) => format!("会话不存在: {}", id),
             AppError::PermissionDenied(e) => format!("权限被拒绝: {}", e),
             AppError::InvalidPath(path) => format!("无效路径: {}", path),
+            AppError::CommandError(e) => format!("命令错误: {}", e),
             AppError::Timeout => "操作超时".to_string(),
             AppError::Unknown(e) => format!("未知错误: {}", e),
         }

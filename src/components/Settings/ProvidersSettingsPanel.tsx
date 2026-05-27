@@ -1,5 +1,5 @@
-import { Database, Plus, Server, Trash2, type LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Database, Eye, EyeOff, Plus, Server, Trash2, type LucideIcon } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -37,11 +37,16 @@ interface ProvidersSettingsPanelProps {
 }
 
 const PROVIDER_KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
-  { value: 'openai-compatible', label: 'OpenAI 兼容' },
-  { value: 'anthropic-compatible', label: 'Anthropic 兼容' },
-  { value: 'gemini-compatible', label: 'Gemini 兼容' },
-  { value: 'custom', label: '自定义' },
+  { value: 'openai-chat', label: 'OpenAI Chat' },
+  { value: 'openai-responses', label: 'OpenAI Responses' },
 ];
+
+function normalizeProviderKind(kind: string | undefined | null): ProviderKind {
+  if (kind === 'openai-responses') {
+    return 'openai-responses';
+  }
+  return 'openai-chat';
+}
 
 function SettingsSection({
   icon: Icon,
@@ -57,7 +62,7 @@ function SettingsSection({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-border-default bg-background-elevated p-4 space-y-4">
+    <section className="rounded-xl border border-border-default bg-background-elevated p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-2">
           <Icon className="h-4 w-4 text-text-muted" />
@@ -70,6 +75,23 @@ function SettingsSection({
       )}
       {children}
     </section>
+  );
+}
+
+function FieldRow({
+  label,
+  children,
+  labelWidthClassName = 'w-[88px]',
+}: {
+  label: string;
+  children: ReactNode;
+  labelWidthClassName?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <label className={`shrink-0 text-sm text-text-primary ${labelWidthClassName}`.trim()}>{label}</label>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
   );
 }
 
@@ -92,70 +114,78 @@ function ProviderEditor({
   onBaseUrlChange: (value: string) => void;
   onApiKeyChange: (value: string) => void;
 }) {
-  const kindLabel = PROVIDER_KIND_OPTIONS.find((o) => o.value === provider.kind)?.label ?? provider.kind;
+  const [showApiKey, setShowApiKey] = useState(false);
   const nameDirty = savedProvider ? provider.name !== savedProvider.name : false;
   const kindDirty = savedProvider ? provider.kind !== savedProvider.kind : false;
   const baseUrlDirty = savedProvider ? (provider.baseUrl ?? '') !== (savedProvider.baseUrl ?? '') : false;
   const apiKeyDirty = savedProvider ? (provider.apiKey ?? '') !== (savedProvider.apiKey ?? '') : false;
   const isDirty = nameDirty || kindDirty || baseUrlDirty || apiKeyDirty;
+  const normalizedKind = normalizeProviderKind(provider.kind);
 
   return (
-    <div className="rounded-xl border border-border-default bg-background-surface p-4 space-y-4">
+    <div className="rounded-xl border border-border-default bg-background-surface p-3 space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-text-primary">{title}</span>
-            {isDirty && <Badge variant="warning">未保存</Badge>}
-          </div>
-          <Badge variant="default" className="mt-1.5">{kindLabel}</Badge>
+        <div className="min-w-0 flex items-center gap-2">
+          <span className="truncate text-sm font-semibold text-text-primary">{title}</span>
+          {isDirty && <Badge variant="warning">未保存</Badge>}
         </div>
         {action}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div>
-          <label className="mb-1.5 block text-sm text-text-primary">名称</label>
-          <Input
-            value={provider.name}
-            onChange={(e) => onNameChange(e.target.value)}
-            placeholder="例如 OpenRouter / 自建网关"
-          />
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-3">
+          <FieldRow label="名称" labelWidthClassName="w-[44px]">
+            <Input
+              value={provider.name}
+              onChange={(e) => onNameChange(e.target.value)}
+              placeholder="例如 OpenRouter / 自建网关"
+            />
+          </FieldRow>
+
+          <FieldRow label="格式" labelWidthClassName="w-[44px]">
+            <Select value={normalizedKind} onValueChange={(v) => onKindChange(v as ProviderKind)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_KIND_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
         </div>
 
-        <div>
-          <label className="mb-1.5 block text-sm text-text-primary">类型</label>
-          <Select value={provider.kind} onValueChange={(v) => onKindChange(v as ProviderKind)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDER_KIND_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="mb-1.5 block text-sm text-text-primary">Base URL</label>
+        <FieldRow label="Base URL">
           <Input
             value={provider.baseUrl ?? ''}
             onChange={(e) => onBaseUrlChange(e.target.value)}
-            placeholder="https://api.example.com/v1"
+            placeholder="https://api.openai.com/v1"
           />
-        </div>
+        </FieldRow>
 
-        <div className="md:col-span-2">
-          <label className="mb-1.5 block text-sm text-text-primary">API Key</label>
-          <Input
-            type="password"
-            value={provider.apiKey ?? ''}
-            onChange={(e) => onApiKeyChange(e.target.value)}
-            placeholder="sk-..."
-          />
-        </div>
+        <FieldRow label="API Key">
+          <div className="relative">
+            <Input
+              type={showApiKey ? 'text' : 'password'}
+              value={provider.apiKey ?? ''}
+              onChange={(e) => onApiKeyChange(e.target.value)}
+              placeholder="sk-..."
+              className="pr-10"
+            />
+            <button
+              type="button"
+              className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-text-muted transition-colors hover:text-text-primary"
+              onClick={() => setShowApiKey((value) => !value)}
+              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+              title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+            >
+              {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </FieldRow>
       </div>
     </div>
   );
@@ -180,7 +210,7 @@ export function ProvidersSettingsPanel({
       <SettingsSection
         icon={Database}
         title="模型服务商"
-        description="集中管理各引擎可绑定的 API 服务商配置。"
+        description="集中管理各引擎可绑定的 API 服务商配置。支持 OpenAI Chat 与 OpenAI Responses。"
         action={
           <Button
             variant="outline"
@@ -234,7 +264,7 @@ export function ProvidersSettingsPanel({
             </Button>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {providers.map((provider) => {
               const saved = savedProviders.find((s) => s.id === provider.id);
               return (

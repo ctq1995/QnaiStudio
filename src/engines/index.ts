@@ -46,8 +46,8 @@ export function getEngineDescriptors(): EngineDescriptor[] {
     },
     {
       id: 'custom-cli',
-      name: 'Custom CLI',
-      description: '预留给自定义命令行引擎的占位注册',
+      name: '内置 Agent',
+      description: '内置 Agent 引擎',
       available: false,
     },
     {

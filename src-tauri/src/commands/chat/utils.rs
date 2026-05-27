@@ -1,6 +1,6 @@
 use crate::models::events::StreamEvent;
 use crate::utils::encoding::decode_cli_output;
-use crate::SessionRuntime;
+use crate::{SessionRuntime, SessionRuntimeKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Window};
@@ -39,7 +39,7 @@ pub fn emit_stream_event(window: &Window, event: &StreamEvent, session_id: &str)
 pub fn register_session_runtime(
     sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
     session_id: &str,
-    pid: u32,
+    kind: SessionRuntimeKind,
 ) {
     if let Ok(mut sessions) = sessions.lock() {
         let mut aliases = HashSet::new();
@@ -48,8 +48,8 @@ pub fn register_session_runtime(
             session_id.to_string(),
             SessionRuntime {
                 canonical_id: session_id.to_string(),
-                pid,
                 aliases,
+                kind,
             },
         );
     }
@@ -59,11 +59,11 @@ pub fn update_session_mapping(
     sessions: &Arc<Mutex<HashMap<String, SessionRuntime>>>,
     old_id: &str,
     new_id: &str,
-) -> Option<u32> {
+) -> Option<SessionRuntimeKind> {
     let mut sessions = sessions.lock().ok()?;
     let runtime = sessions.get(old_id)?.clone();
     let canonical_before = runtime.canonical_id.clone();
-    let pid = runtime.pid;
+    let kind = runtime.kind.clone();
 
     let mut aliases = runtime.aliases.clone();
     aliases.insert(old_id.to_string());
@@ -71,8 +71,8 @@ pub fn update_session_mapping(
 
     let updated = SessionRuntime {
         canonical_id: new_id.to_string(),
-        pid,
         aliases: aliases.clone(),
+        kind: kind.clone(),
     };
 
     for alias in &aliases {
@@ -81,7 +81,7 @@ pub fn update_session_mapping(
     if canonical_before != new_id {
         sessions.insert(new_id.to_string(), updated);
     }
-    Some(pid)
+    Some(kind)
 }
 
 pub fn resolve_session_pid(
@@ -89,7 +89,7 @@ pub fn resolve_session_pid(
     session_id: &str,
 ) -> Option<u32> {
     let sessions = sessions.lock().ok()?;
-    sessions.get(session_id).map(|runtime| runtime.pid)
+    sessions.get(session_id).and_then(|runtime| runtime.pid())
 }
 
 pub fn remove_session_runtime(

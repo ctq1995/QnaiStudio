@@ -6,6 +6,7 @@ use crate::commands::chat::utils::{
     terminate_process,
 };
 use crate::SessionRuntime;
+use crate::SessionRuntimeKind;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,7 @@ pub async fn start_codex_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Re
     let session_id = args.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let child = CodexService::start_chat(&ctx.config, &args.message)?;
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &session_id, SessionRuntimeKind::Process { pid });
     spawn_codex_reader(CodexReaderArgs {
         child,
         session_id: session_id.clone(),
@@ -32,7 +33,7 @@ pub async fn continue_codex_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
     terminate_existing_session(&ctx.state.sessions, &args.session_id);
     let child = CodexService::continue_chat(&ctx.config, &args.session_id, &args.message)?;
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &args.session_id, SessionRuntimeKind::Process { pid });
     spawn_codex_reader(CodexReaderArgs {
         child,
         session_id: args.session_id.clone(),
@@ -41,6 +42,7 @@ pub async fn continue_codex_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
     });
     Ok(())
 }
+
 
 struct CodexReaderArgs {
     child: std::process::Child,

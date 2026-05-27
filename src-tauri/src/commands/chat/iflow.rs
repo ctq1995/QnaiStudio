@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use crate::SessionRuntime;
+use crate::SessionRuntimeKind;
 
 const START_LINE_BEGIN: usize = 0;
 
@@ -20,7 +21,7 @@ pub async fn start_iflow_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Re
     let temp_session_id = args.session_id.clone().unwrap_or_else(|| session.id.clone());
     session.id = temp_session_id.clone();
     let pid = session.child.id();
-    register_session_runtime(&ctx.state.sessions, &temp_session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &temp_session_id, SessionRuntimeKind::Process { pid });
     spawn_iflow_start_thread(IflowStartThreadArgs {
         session,
         window: ctx.window.clone(),
@@ -34,7 +35,7 @@ pub async fn continue_iflow_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
     terminate_existing_session(&ctx.state.sessions, &args.session_id);
     let child = IFlowService::continue_chat(&ctx.config, &args.session_id, &args.message)?;
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &args.session_id, SessionRuntimeKind::Process { pid });
     spawn_iflow_continue_thread(IflowContinueThreadArgs {
         child,
         session_id: args.session_id.clone(),
@@ -44,6 +45,7 @@ pub async fn continue_iflow_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs)
     });
     Ok(())
 }
+
 
 struct IflowStartThreadArgs {
     session: IFlowSession,

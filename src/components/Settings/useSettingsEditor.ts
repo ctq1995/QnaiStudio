@@ -40,7 +40,7 @@ export interface ProviderDraft {
 function createProviderDraft(): ProviderDraft {
   return {
     name: '',
-    kind: 'openai-compatible',
+    kind: 'openai-chat',
     baseUrl: '',
     apiKey: '',
   };
@@ -110,7 +110,13 @@ export function useSettingsEditor(options: UseSettingsEditorOptions) {
     markEdited();
     setLocalConfig((current) => {
       if (!current) return current;
-      const engineKey = engineId === 'claude-code' ? 'claudeCode' : engineId === 'codex-cli' ? 'codexCli' : engineId;
+      const engineKey = engineId === 'claude-code'
+        ? 'claudeCode'
+        : engineId === 'codex-cli'
+          ? 'codexCli'
+          : engineId === 'custom-cli'
+            ? 'customCli'
+            : engineId;
       return {
         ...current,
         [engineKey]: { ...(current as any)[engineKey], [key]: value || undefined },
@@ -216,6 +222,7 @@ export function useSettingsEditor(options: UseSettingsEditorOptions) {
         codexCli: current.codexCli.providerId === providerId ? { ...current.codexCli, providerId: undefined } : current.codexCli,
         gemini: current.gemini.providerId === providerId ? { ...current.gemini, providerId: undefined } : current.gemini,
         iflow: current.iflow.providerId === providerId ? { ...current.iflow, providerId: undefined } : current.iflow,
+        customCli: current.customCli.providerId === providerId ? { ...current.customCli, providerId: undefined } : current.customCli,
       };
     });
   }, [markEdited, setLocalConfig]);

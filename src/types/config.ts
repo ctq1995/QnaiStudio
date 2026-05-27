@@ -24,8 +24,8 @@ export interface FloatingWindowConfig {
   collapseDelay: number
 }
 
-/** 模型服务商类型 */
-export type ProviderKind = 'openai-compatible' | 'anthropic-compatible' | 'gemini-compatible' | 'custom'
+/** 模型服务商请求格式 */
+export type ProviderKind = 'openai-chat' | 'openai-responses'
 
 /** 模型服务商配置 */
 export interface ModelProviderConfig {
@@ -134,7 +134,8 @@ export function getEngineAvailability(health: HealthStatus, engineId: EngineId):
     case 'gemini':
       return health.geminiAvailable
     case 'custom-cli':
-      return health.customCliAvailable
+      // 内置 Agent 引擎，始终可用，无需连接外部 CLI
+      return true
     case 'claude-code':
     default:
       return health.claudeAvailable
@@ -151,7 +152,7 @@ export function getEngineVersion(health: HealthStatus, engineId: EngineId): stri
     case 'gemini':
       return health.geminiVersion ?? 'Gemini CLI 未连接'
     case 'custom-cli':
-      return health.customCliVersion ?? 'Custom CLI 未连接'
+      return health.customCliVersion ?? '1.0.0'
     case 'claude-code':
     default:
       return health.claudeVersion ?? 'Claude 未连接'

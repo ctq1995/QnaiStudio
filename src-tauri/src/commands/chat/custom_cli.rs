@@ -1,62 +1,47 @@
 use super::{ChatContext, ContinueChatArgs, StartChatArgs};
-use crate::commands::chat::utils::{emit_chat_event, register_session_runtime, remove_session_runtime, remove_stdin_handle};
+use crate::commands::chat::utils::{emit_chat_event, register_session_runtime};
 use crate::error::{AppError, Result};
-use crate::services::custom_cli_service::{CustomCliService, CustomCliStreamItem};
+use crate::services::agent_runtime::AgentRuntime;
+use crate::SessionRuntimeKind;
 use uuid::Uuid;
 
 pub async fn start_custom_cli_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> Result<String> {
     let session_id = args.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-    let request = CustomCliService::start_request_builder(session_id.clone(), args.message.clone())
-        .system_prompt(args.system_prompt.as_deref())
-        .build();
-    let spawn_result = CustomCliService::spawn_custom_cli(&ctx.config)?;
-    let pid = spawn_result.child.id();
-    let mut stdin = spawn_result.stdin;
-    CustomCliService::write_request(&mut stdin, &request)?;
-
-    register_session_runtime(&ctx.state.sessions, &session_id, pid);
-    if let Ok(mut handles) = ctx.state.stdin_handles.lock() {
-        handles.insert(session_id.clone(), stdin);
-    }
-
-    let window = ctx.window.clone();
-    let sessions = std::sync::Arc::clone(&ctx.state.sessions);
-    let stdin_handles = std::sync::Arc::clone(&ctx.state.stdin_handles);
-    let event_session_id = session_id.clone();
-    let cleanup_session_id = session_id.clone();
-
-    CustomCliService::forward_stdout_events(
-        spawn_result.child,
-        move |item| match item {
-            CustomCliStreamItem::Event(event) => emit_chat_event(&window, event, &event_session_id),
-            CustomCliStreamItem::SessionEnd => emit_chat_event(
-                &window,
-                serde_json::json!({
-                    "type": "session_end",
-                    "reason": "completed",
-                }),
-                &event_session_id,
-            ),
-        },
-        move || {
-            let _ = remove_session_runtime(&sessions, &cleanup_session_id);
-            remove_stdin_handle(&stdin_handles, &cleanup_session_id);
-        },
+    let runtime = AgentRuntime::new(
+        ctx.state.agent_sessions.clone(),
+        ctx.state.built_in_agent_sessions.clone(),
+        ctx.state.agent_session_manager.clone(),
     );
+    let events = runtime
+        .start_built_in_session(session_id.clone(), &ctx.config, &args.message)
+        .await?;
+
+    register_session_runtime(&ctx.state.sessions, &session_id, SessionRuntimeKind::BuiltIn);
+
+    for event in events {
+        emit_chat_event(&ctx.window, serde_json::to_value(event).map_err(|e| AppError::Unknown(e.to_string()))?, &session_id);
+    }
 
     Ok(session_id)
 }
 
 pub async fn continue_custom_cli_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs) -> Result<()> {
-    let request = CustomCliService::continue_request_builder(args.session_id.clone(), args.message.clone())
-        .system_prompt(args.system_prompt.as_deref())
-        .build();
+    let runtime = AgentRuntime::new(
+        ctx.state.agent_sessions.clone(),
+        ctx.state.built_in_agent_sessions.clone(),
+        ctx.state.agent_session_manager.clone(),
+    );
+    let events = runtime.continue_built_in_session(&args.session_id, &args.message).await?;
 
-    let mut handles = ctx.state.stdin_handles.lock()
-        .map_err(|error| AppError::Unknown(error.to_string()))?;
-    let stdin = handles.get_mut(&args.session_id).ok_or_else(|| {
-        AppError::ProcessError(format!("未找到会话 {} 的 stdin 句柄，无法继续 custom-cli 会话", args.session_id))
-    })?;
-    CustomCliService::write_request(stdin, &request)
+    for event in events {
+        emit_chat_event(
+            &ctx.window,
+            serde_json::to_value(event).map_err(|e| AppError::Unknown(e.to_string()))?,
+            &args.session_id,
+        );
+    }
+
+    Ok(())
 }
+
 

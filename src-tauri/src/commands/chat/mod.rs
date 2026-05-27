@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::models::config::{Config, EngineId};
+use crate::SessionRuntimeKind;
 use std::path::PathBuf;
 use tauri::{State, Window};
 
@@ -153,28 +154,45 @@ pub async fn interrupt_chat(
 
 #[tauri::command]
 pub async fn respond_permission(
+    window: Window,
     state: State<'_, crate::AppState>,
     payload: RespondPermissionPayload,
 ) -> Result<()> {
-    let mut handles = state.stdin_handles.lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
+    let session_id = payload.session_id;
+    let approved = payload.approved;
 
-    if let Some(stdin) = handles.get_mut(&payload.session_id) {
-        // Claude Code: 'y' to approve, 'n' to deny
-        // Codex CLI: 'y' to approve, 'n' to deny
-        // Gemini CLI: 'y' to approve, 'n' to deny
-        let response = if payload.approved { "y\n" } else { "n\n" };
-        use std::io::Write;
-        stdin.write_all(response.as_bytes())
-            .map_err(|e| AppError::Unknown(format!("写入 stdin 失败: {}", e)))?;
-        stdin.flush()
-            .map_err(|e| AppError::Unknown(format!("flush stdin 失败: {}", e)))?;
-        Ok(())
-    } else {
-        Err(AppError::Unknown(format!(
-            "未找到会话 {} 的 stdin 句柄，可能进程已结束或不支持权限交互",
-            payload.session_id
-        )))
+    let runtime_kind = {
+        let sessions = state.sessions.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+        sessions.get(&session_id).map(|runtime| runtime.kind.clone())
+    };
+
+    match runtime_kind {
+        Some(SessionRuntimeKind::Process { .. }) => {
+            let mut handles = state.stdin_handles.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+            let stdin = handles
+                .get_mut(&session_id)
+                .ok_or_else(|| AppError::SessionNotFound(session_id.clone()))?;
+
+            use std::io::Write;
+            stdin.write_all(if approved { b"y\n" } else { b"n\n" })
+                .map_err(|e| AppError::Unknown(format!("写入 stdin 失败: {}", e)))?;
+            stdin.flush()
+                .map_err(|e| AppError::Unknown(format!("flush stdin 失败: {}", e)))?;
+            Ok(())
+        }
+        Some(SessionRuntimeKind::BuiltIn) => {
+            let runtime = crate::services::agent_runtime::AgentRuntime::new(
+                state.agent_sessions.clone(),
+                state.built_in_agent_sessions.clone(),
+                state.agent_session_manager.clone(),
+            );
+            let events = runtime.respond_built_in_permission(&session_id, approved).await?;
+            for event in events {
+                utils::emit_stream_event(&window, &event, &session_id);
+            }
+            Ok(())
+        }
+        None => Err(AppError::SessionNotFound(session_id)),
     }
 }
 

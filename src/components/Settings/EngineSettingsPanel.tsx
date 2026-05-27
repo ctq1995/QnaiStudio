@@ -69,7 +69,7 @@ const ENGINE_MODEL_META: Record<EngineId, { placeholder: string; hint: string }>
   'codex-cli': { placeholder: 'o4-mini', hint: '常用：o4-mini / gpt-4o / gpt-4.1' },
   iflow: { placeholder: '', hint: '指定使用的模型名称（如有）' },
   gemini: { placeholder: 'gemini-2.5-pro', hint: '常用：gemini-2.5-pro / gemini-2.0-flash' },
-  'custom-cli': { placeholder: '', hint: '可选：为自定义 CLI 记录展示用模型名称' },
+  'custom-cli': { placeholder: '', hint: '可选：为内置 Agent 记录展示用模型名称' },
 };
 
 /* ── Section card ── */
@@ -192,6 +192,7 @@ function EngineParamsEditor({
         <ModelInputWithFetch
           engineId={engineId}
           value={engineConfig.model ?? ''}
+          providerKind={selectedProvider?.kind ?? 'openai-chat'}
           baseUrl={selectedProvider?.baseUrl ?? engineConfig.baseUrl ?? ''}
           apiKey={selectedProvider?.apiKey ?? engineConfig.apiKey ?? ''}
           placeholder={modelMeta.placeholder}
@@ -531,6 +532,7 @@ function resolveEngineBinding(config: Config, engineId: EngineId) {
   if (engineId === 'claude-code') return config.claudeCode;
   if (engineId === 'codex-cli') return config.codexCli;
   if (engineId === 'gemini') return config.gemini;
+  if (engineId === 'custom-cli') return config.customCli;
   return config.iflow;
 }
 
@@ -538,6 +540,7 @@ function resolveEngineCliPath(config: Config, engineId: EngineId) {
   if (engineId === 'claude-code') return config.claudeCode.cliPath;
   if (engineId === 'codex-cli') return config.codexCli.cliPath;
   if (engineId === 'gemini') return config.gemini.cliPath;
+  if (engineId === 'custom-cli') return config.customCli.cliPath;
   return config.iflow.cliPath || 'iflow';
 }
 
@@ -551,6 +554,7 @@ function resolvePathHandler(
   if (engineId === 'claude-code') return onClaudePathChange;
   if (engineId === 'codex-cli') return onCodexPathChange;
   if (engineId === 'gemini') return onGeminiPathChange;
+  if (engineId === 'custom-cli') return () => {};
   return onIFlowPathChange;
 }
 

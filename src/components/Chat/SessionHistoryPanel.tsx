@@ -79,7 +79,7 @@ function getEngineInfo(item: UnifiedHistoryItem) {
 
   if (item.engineId === 'custom-cli') {
     return {
-      name: 'Custom CLI',
+      name: '内置 Agent',
       color: 'text-amber-500',
       badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
       icon: Zap,
@@ -240,7 +240,7 @@ export function SessionHistoryPanel({ onClose }: SessionHistoryPanelProps) {
         <FilterButton active={filter === 'codex-cli'} label="Codex" onClick={() => setFilter('codex-cli')} />
         <FilterButton active={filter === 'iflow'} label="IFlow" onClick={() => setFilter('iflow')} />
         <FilterButton active={filter === 'gemini'} label="Gemini" onClick={() => setFilter('gemini')} />
-        <FilterButton active={filter === 'custom-cli'} label="Custom CLI" onClick={() => setFilter('custom-cli')} />
+        <FilterButton active={filter === 'custom-cli'} label="内置 Agent" onClick={() => setFilter('custom-cli')} />
       </div>
 
       <div className="shrink-0 border-b border-border-subtle px-4 py-3">

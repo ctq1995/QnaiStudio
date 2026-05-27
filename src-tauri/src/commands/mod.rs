@@ -2,6 +2,8 @@ pub mod chat;
 pub mod ai_log;
 pub mod workspace;
 pub mod file_explorer;
+pub mod secure_file_tools;
+pub mod git_tools;
 pub mod window;
 pub mod context;
 pub mod versioning;

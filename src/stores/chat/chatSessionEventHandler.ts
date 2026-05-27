@@ -19,6 +19,24 @@ function handleSessionStart(event: Extract<AIEvent, { type: 'session_start' }>, 
 function handleSessionEnd(event: Extract<AIEvent, { type: 'session_end' }>, sessionSet: SessionSet) {
   const msgStore = useChatMessageStore.getState();
   const sessionStore = useChatSessionStore.getState();
+  const reason = event.reason || 'completed';
+  const now = new Date().toISOString();
+  const reasonMeta = (() => {
+    switch (reason) {
+      case 'completed':
+        return { summary: '运行完成', detail: 'completed', kind: 'completed' as const };
+      case 'aborted':
+        return { summary: '运行已中止', detail: 'aborted', kind: 'aborted' as const };
+      case 'permission_denied':
+        return { summary: '已拒绝权限请求，运行结束', detail: 'permission_denied', kind: 'error' as const };
+      case 'max_rounds':
+        return { summary: '达到最大轮次限制，运行结束', detail: 'max_rounds', kind: 'error' as const };
+      case 'error':
+        return { summary: '运行因错误结束', detail: 'error', kind: 'error' as const };
+      default:
+        return { summary: `运行结束: ${reason}`, detail: reason, kind: 'error' as const };
+    }
+  })();
 
   if (sessionStore.interruptedLocally) {
     sessionSet({ isStreaming: false, interruptedLocally: false });
@@ -27,10 +45,27 @@ function handleSessionEnd(event: Extract<AIEvent, { type: 'session_end' }>, sess
     return;
   }
 
+  msgStore.setRunStatus({
+    kind: reasonMeta.kind,
+    summary: reasonMeta.summary,
+    detail: reasonMeta.detail,
+    toolName: null,
+    reason,
+    updatedAt: now,
+    scope: 'session',
+  });
+
+  if (reasonMeta.kind !== 'completed' && (msgStore.currentMessage || [...msgStore.messages].reverse().some((message) => message.type === 'assistant'))) {
+    msgStore.setInlineStatus({
+      kind: reasonMeta.kind === 'aborted' ? 'aborted' : 'error',
+      summary: reasonMeta.summary,
+      detail: reasonMeta.detail,
+    });
+  }
+
   msgStore.finishMessage();
   sessionStore.completeActiveQueueItem();
   sessionSet({ isStreaming: false, interruptedLocally: false });
-  msgStore.setRunStatus(null);
   queueMicrotask(() => {
     void useChatSessionStore.getState().processNextQueuedMessage();
   });
@@ -77,14 +112,18 @@ function handleToolCallOutput(event: Extract<AIEvent, { type: 'tool_call_output'
 
 function handleProgress(event: Extract<AIEvent, { type: 'progress' }>) {
   const normalized = event.message?.trim() || null;
+  const statusKind = event.statusKind ?? 'running';
+  const now = new Date().toISOString();
+
   useChatMessageStore.getState().setRunStatus(
     normalized
       ? {
-          kind: 'running',
+          kind: statusKind,
           summary: normalized,
-          detail: null,
-          toolName: null,
-          updatedAt: new Date().toISOString(),
+          detail: event.detail ?? event.reason ?? null,
+          toolName: event.toolName ?? null,
+          reason: event.reason ?? null,
+          updatedAt: now,
           scope: 'session',
         }
       : null
@@ -92,7 +131,20 @@ function handleProgress(event: Extract<AIEvent, { type: 'progress' }>) {
 }
 
 function handlePermissionRequest(event: Extract<AIEvent, { type: 'permission_request' }>) {
-  useChatMessageStore.getState().appendPermissionBlock({
+  const msgStore = useChatMessageStore.getState();
+  const detail = event.summary || event.responseHint || 'waiting_approval';
+
+  msgStore.setRunStatus({
+    kind: 'permission_pending',
+    summary: '等待权限批准',
+    detail,
+    toolName: event.denials[0]?.toolName ?? null,
+    reason: 'waiting_approval',
+    updatedAt: new Date().toISOString(),
+    scope: 'session',
+  });
+
+  msgStore.appendPermissionBlock({
     sessionId: event.sessionId,
     engineId: event.engineId,
     summary: event.summary,

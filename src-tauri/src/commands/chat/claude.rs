@@ -1,6 +1,7 @@
 use super::{ChatContext, ContinueChatArgs, StartChatArgs};
 use crate::error::{AppError, Result};
 use crate::models::events::StreamEvent;
+use crate::SessionRuntimeKind;
 use std::sync::Arc;
 
 use crate::commands::chat::session::{
@@ -24,7 +25,7 @@ pub async fn start_claude_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> R
 
     let session_id = session.id.clone();
     let pid = session.child.id();
-    register_session_runtime(&ctx.state.sessions, &session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &session_id, SessionRuntimeKind::Process { pid });
 
     if let Some(stdin) = session.child.stdin.take() {
         if let Ok(mut handles) = ctx.state.stdin_handles.lock() {
@@ -52,7 +53,7 @@ pub async fn continue_claude_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     })?;
 
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &args.session_id, SessionRuntimeKind::Process { pid });
 
     if let Some(stdin) = child.stdin.take() {
         if let Ok(mut handles) = ctx.state.stdin_handles.lock() {
@@ -70,6 +71,7 @@ pub async fn continue_claude_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     });
     Ok(())
 }
+
 
 struct ClaudeProcessArgs<'a> {
     config: &'a crate::models::config::Config,

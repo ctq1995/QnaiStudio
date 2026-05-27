@@ -131,10 +131,11 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
       break
     }
     case 'session_end': {
+      const sessionEndEvent = streamEvent as { type: 'session_end'; sessionId?: string; reason?: string }
       events.push({
         type: 'session_end',
-        sessionId: sessionId || 'unknown',
-        reason: streamEvent.reason === 'aborted' ? 'aborted' : streamEvent.reason === 'completed' ? 'completed' : 'error',
+        sessionId: sessionId || sessionEndEvent.sessionId || 'unknown',
+        reason: typeof sessionEndEvent.reason === 'string' ? sessionEndEvent.reason : 'error',
       })
       break
     }
@@ -200,22 +201,28 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
       events.push({
         type: 'progress',
         message: `调用工具: ${toolInfo.toolName}`,
+        statusKind: 'tool',
+        toolName: toolInfo.toolName,
       })
       break
     }
     case 'tool_end':
     case 'tool_result': {
       const toolInfo = extractToolEventInfo(streamEvent)
+      const success = toolInfo.success ?? toolInfo.output !== undefined
       events.push({
         type: 'tool_call_end',
         callId: toolInfo.toolId,
         tool: toolInfo.toolName,
         result: toolInfo.output,
-        success: toolInfo.success ?? toolInfo.output !== undefined,
+        success,
       })
       events.push({
         type: 'progress',
-        message: `工具完成: ${toolInfo.toolName}`,
+        message: success ? `工具完成: ${toolInfo.toolName}` : `工具失败: ${toolInfo.toolName}`,
+        statusKind: success ? 'tool' : 'error',
+        toolName: toolInfo.toolName,
+        detail: typeof toolInfo.output === 'string' ? toolInfo.output : undefined,
       })
       break
     }
@@ -237,6 +244,18 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
       events.push({
         type: 'progress',
         message: streamEvent.message,
+        statusKind: typeof (streamEvent as { statusKind?: unknown }).statusKind === 'string'
+          ? ((streamEvent as { statusKind?: 'running' | 'tool' | 'permission_pending' | 'completed' | 'aborted' | 'error' }).statusKind)
+          : 'running',
+        detail: typeof (streamEvent as { detail?: unknown }).detail === 'string'
+          ? (streamEvent as { detail?: string }).detail
+          : undefined,
+        toolName: typeof (streamEvent as { toolName?: unknown }).toolName === 'string'
+          ? (streamEvent as { toolName?: string }).toolName
+          : undefined,
+        reason: typeof (streamEvent as { reason?: unknown }).reason === 'string'
+          ? (streamEvent as { reason?: string }).reason
+          : undefined,
       })
       break
     }
@@ -255,11 +274,21 @@ export function convertStreamEventToAIEvents(streamEvent: StreamEvent, sessionId
         return {
           toolName: (obj.toolName as string) || (obj.tool_name as string) || 'unknown',
           reason: (obj.reason as string) || '',
+          details: (typeof obj.details === 'object' && obj.details !== null ? obj.details : undefined) as Record<string, unknown> | undefined,
         }
+      })
+      events.push({
+        type: 'progress',
+        message: '等待权限批准',
+        statusKind: 'permission_pending',
+        reason: 'waiting_approval',
       })
       events.push({
         type: 'permission_request',
         sessionId,
+        engineId: typeof streamEvent.engineId === 'string' ? streamEvent.engineId : undefined,
+        summary: typeof streamEvent.summary === 'string' ? streamEvent.summary : undefined,
+        responseHint: typeof streamEvent.responseHint === 'string' ? streamEvent.responseHint : undefined,
         denials,
       })
       break
@@ -293,17 +322,18 @@ export function extractErrorMessage(error: unknown, fallback: string): string {
 
 /** 当前 assistant 消息上的临时状态 */
 export interface InlineAssistantStatus {
-  kind: 'reconnecting' | 'error'
+  kind: 'reconnecting' | 'error' | 'permission_pending' | 'aborted'
   summary: string
   detail: string
 }
 
 /** 会话级 CLI 运行状态 */
 export interface ChatRunStatus {
-  kind: 'running' | 'tool' | 'reconnecting' | 'error'
+  kind: 'running' | 'tool' | 'reconnecting' | 'error' | 'permission_pending' | 'completed' | 'aborted'
   summary: string
   detail?: string | null
   toolName?: string | null
+  reason?: string | null
   updatedAt: string
   scope: 'session'
 }

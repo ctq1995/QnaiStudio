@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { type ReactNode, useMemo } from 'react';
 import { useErrorCenterStore } from '../../stores';
 import { ErrorCenterPopover } from './ErrorCenterPopover';
 
@@ -6,6 +6,7 @@ interface AppStatusBarProps {
   workspaceName: string;
   workspacePath?: string | null;
   engineLabel: string;
+  engineConnected: boolean;
   engineVersion?: string | null;
   endpoint?: string | null;
   modelLabel?: string | null;
@@ -28,16 +29,18 @@ function StatusPill({
   value,
   title,
   valueClassName = '',
+  valueNode,
 }: {
   label: string;
   value: string;
   title?: string;
   valueClassName?: string;
+  valueNode?: ReactNode;
 }) {
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 transition-colors hover:border-border-hover hover:bg-background-hover/60" title={title}>
       <span className="shrink-0 text-xs text-text-tertiary">{label}</span>
-      <span className={`truncate text-xs text-text-primary ${valueClassName}`.trim()}>{value}</span>
+      {valueNode ?? <span className={`truncate text-xs text-text-primary ${valueClassName}`.trim()}>{value}</span>}
     </div>
   );
 }
@@ -46,6 +49,7 @@ export function AppStatusBar({
   workspaceName,
   workspacePath,
   engineLabel,
+  engineConnected,
   engineVersion,
   endpoint,
   modelLabel,
@@ -68,6 +72,22 @@ export function AppStatusBar({
           valueClassName="max-w-[180px]"
         />
         <StatusPill label="智能体" value={engineLabel} valueClassName="max-w-[120px]" />
+        <StatusPill
+          label="状态"
+          value={engineConnected ? '已连接' : '未连接'}
+          valueNode={(
+            <span
+              className={[
+                'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+                engineConnected
+                  ? 'bg-success/12 text-success ring-1 ring-success/20'
+                  : 'bg-danger/12 text-danger ring-1 ring-danger/20',
+              ].join(' ')}
+            >
+              {engineConnected ? '已连接' : '未连接'}
+            </span>
+          )}
+        />
         <StatusPill label="版本" value={formatVersion(engineVersion)} valueClassName="max-w-[110px]" />
         <StatusPill
           label="端点"

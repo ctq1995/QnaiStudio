@@ -1,358 +1,86 @@
 /**
-
- * AI Runtime - AI 抽象运行时
-
+ * AI Runtime - 统一 AI 执行运行时
  *
-
- * 这是一个通用的 AI Code Runtime 平台的核心抽象层。
-
- * 提供了统一的接口来集成不同的 AI Engine（Claude Code、IFlow、OpenAI、本地 LLM 等）。
-
- *
-
- * @module ai-runtime
-
+ * 提供统一的 AI 引擎抽象、会话管理、任务调度、事件系统、Agent 角色和工具系统。
  */
 
-
-
-// 导出核心类型和接口
-
+// Engine and Session
 export * from './engine'
-
 export * from './session'
-
-export * from './task'
-
-export * from './event'
-
-export * from './event-bus'
-
-export * from './cli-parser'
-
 export * from './engine-registry'
 
+// Task and Event
+export * from './task'
 export * from './task-template'
+export * from './task-manager'
+export * from './task-queue'
+export * from './session-pool'
+export * from './event'
+export * from './event-bus'
 
+// Agent Role System (新增)
+export * from './agent-role'
+export * from './agent-role-registry'
+export * from './agents/builtin-agents'
+
+// Tool and Skill System (新增)
+export * from './tool'
+export * from './tool-registry'
+export * from './tools/file-tools'
+export * from './tools/git-tools'
+export * from './tools/search-tools'
+
+// Memory System (新增)
+export type {
+  MemoryType,
+  MemoryEntry,
+  MemoryMetadata,
+  MemoryQuery,
+  MemorySearchResult,
+  MemoryStorageConfig,
+  ProjectMemoryContext,
+  ProjectKnowledge,
+  ArchitecturalDecision,
+  CodePattern,
+  CommonSolution,
+  ProjectConvention,
+  DependencyInfo as MemoryDependencyInfo,
+  MemoryStore,
+  MemoryStats,
+  SessionMemory,
+  ConversationTurn,
+} from './memory'
+export {
+  createMemoryEntry,
+  createSessionMemory,
+  DEFAULT_MEMORY_CONFIG,
+} from './memory'
+export {
+  InMemoryMemoryStore,
+  getInMemoryMemoryStore,
+} from './memory-store'
+
+// Project Context
 export * from './project-context'
 
-export * from './session-pool'
-
-// 导出基类（用于 Engine 实现）
-
-export * from './base'
-
-
-
-// 导出便捷工具函数
-
-export {
-
-  createTask,
-
-  type AITask,
-
-  type AITaskKind,
-
-  type AITaskInput,
-
-  type AITaskStatus,
-
-  type AITaskMetadata,
-
-} from './task'
-
-
-
-export {
-
-  createTokenEvent,
-
-  createToolCallStartEvent,
-
-  createToolCallEndEvent,
-
-  createToolCallOutputEvent,
-
-  createProgressEvent,
-
-  createErrorEvent,
-
-  createSessionStartEvent,
-
-  createSessionEndEvent,
-
-  createUserMessageEvent,
-
-  createAssistantMessageEvent,
-
-  createPermissionRequestEvent,
-
-  createTaskMetadataEvent,
-
-  createTaskProgressEvent,
-
-  createTaskCompletedEvent,
-
-  createTaskCanceledEvent,
-
-  isTokenEvent,
-
-  isToolCallStartEvent,
-
-  isToolCallEndEvent,
-
-  isToolCallOutputEvent,
-
-  isProgressEvent,
-
-  isErrorEvent,
-
-  isSessionStartEvent,
-
-  isSessionEndEvent,
-
-  isUserMessageEvent,
-
-  isAssistantMessageEvent,
-
-  isTaskMetadataEvent,
-
-  isTaskProgressEvent,
-
-  isTaskCompletedEvent,
-
-  isTaskCanceledEvent,
-
-} from './event'
-
-
-
-export type {
-
-  AIEvent,
-
-  AIEventListener,
-
-  AIEventFilter,
-
-  TokenEvent,
-
-  ToolCallStartEvent,
-
-  ToolCallEndEvent,
-
-  ToolCallOutputEvent,
-
-  ProgressEvent,
-
-  ResultEvent,
-
-  ErrorEvent,
-
-  SessionStartEvent,
-
-  SessionEndEvent,
-
-  UserMessageEvent,
-
-  AssistantMessageEvent,
-
-  ToolCallInfo,
-
-  TaskStatus,
-
-  TaskMetadataEvent,
-
-  TaskProgressEvent,
-
-  TaskCompletedEvent,
-
-  TaskCanceledEvent,
-
-} from './event'
-
-
-
-export {
-
-  createSessionConfig,
-
-  EventEmitter,
-
-} from './session'
-
-
-
-export type {
-
-  AISession,
-
-  AISyncSession,
-
-  AISessionConfig,
-
-  AISessionStatus,
-
-  AISessionFactory,
-
-} from './session'
-
-
-
-export { createCapabilities } from './engine'
-
-
-
-export type {
-
-  AIEngine,
-
-  AIEngineFactory,
-
-  EngineCapabilities,
-
-  EngineDescriptor,
-
-} from './engine'
-
-
-
-// Engine Registry 导出
-
-export {
-
-  AIEngineRegistry,
-
-  getEngineRegistry,
-
-  resetEngineRegistry,
-
-  registerEngine,
-
-  getEngine,
-
-  listEngines,
-
-  getDefaultEngine,
-
-  type EngineRegistration,
-
-  type EngineRegistrationOptions,
-
-  type EngineRegistryEvent,
-
-  type EngineRegistryEventListener,
-
-} from './engine-registry'
-
-
-
-// EventBus 导出
-
-export {
-
-  EventBus,
-
-  EventChannel,
-
-  NamespacedEventBus,
-
-  getEventBus,
-
-  resetEventBus,
-
-  type EventListener,
-
-  type EventFilter,
-
-  type EventTransformer,
-
-  type ListenerOptions,
-
-} from './event-bus'
-
-
-
-// CLI Parser 导出
-
-export {
-
-  CLIParser,
-
-  createParser,
-
-  parseOutput,
-
-} from './cli-parser'
-
-
-
-// Task Manager 导出
-
-export {
-
-  TaskManager,
-
-  getTaskManager,
-
-  resetTaskManager,
-
-  submitTask,
-
-  executeTask,
-
-  abortTask,
-
-  type TaskManagerConfig,
-
-  type TaskOptions,
-
-  type TaskPriority,
-
-  type TaskResult,
-
-  type TaskManagerEvent,
-
-} from './task-manager'
-
-
-
-// Task Queue 导出
-
-export {
-
-  TaskQueue,
-
-  createTaskQueue,
-
-  getTaskQueue,
-
-  resetTaskQueue,
-
-  type QueuedTaskStatus,
-
-  type TaskQueueConfig,
-
-} from './task-queue'
-
-
+// CLI Parser
+export * from './cli-parser'
+
+// Base classes
+export * from './base/base-session'
+export * from './base/base-event-parser'
+export * from './base/index'
 
 /**
-
  * AI Runtime 版本
-
  */
-
-export const VERSION = '2.0.0'
-
-
+export const AI_RUNTIME_VERSION = '1.0.0'
 
 /**
-
- * 默认 Engine ID
-
+ * AI Runtime 构建信息
  */
-
-export const DEFAULT_ENGINE_ID = 'claude-code'
-
+export const AI_RUNTIME_BUILD = {
+  version: AI_RUNTIME_VERSION,
+  codename: 'Polaris',
+  releaseDate: '2025-01-01',
+}

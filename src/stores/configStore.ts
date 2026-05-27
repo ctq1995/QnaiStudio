@@ -5,7 +5,7 @@
 import { create } from 'zustand';
 import type { Config, HealthStatus } from '../types';
 import { getEngineAvailability } from '../types';
-import { getEngineLabel } from '../utils/engineLabels';
+import { getEngineCapabilities, getEngineLabel } from '../utils/engineLabels';
 import * as tauri from '../services/tauri';
 
 interface ConfigState {
@@ -32,6 +32,8 @@ async function setCurrentEngineCliPath(engineId: Config['defaultEngine'] | undef
     case 'codex-cli':
       await tauri.setCodexCmd(cliPath);
       return;
+    case 'custom-cli':
+      return;
     case 'claude-code':
     default:
       await tauri.setClaudeCmd(cliPath);
@@ -47,8 +49,20 @@ async function fetchConfigAndHealth() {
   return { config, healthStatus };
 }
 
-function getConnectionState(config: Config | null, healthStatus: HealthStatus): 'success' | 'failed' {
-  return getEngineAvailability(healthStatus, config?.defaultEngine ?? 'claude-code') ? 'success' : 'failed';
+function getConnectionState(config: Config | null, healthStatus: HealthStatus | null): 'success' | 'failed' {
+  const engineId = config?.defaultEngine ?? 'claude-code'
+  
+  // 内置 Agent 引擎始终成功，无需连接检查
+  if (engineId === 'custom-cli') {
+    return 'success'
+  }
+  
+  // 如果没有 healthStatus，返回 failed
+  if (!healthStatus) {
+    return 'failed'
+  }
+  
+  return getEngineAvailability(healthStatus, engineId) ? 'success' : 'failed'
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
@@ -64,7 +78,29 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ loading: true, error: null });
     try {
       const config = await tauri.getConfig();
-      set({ config, loading: false });
+      
+      // 为内置 Agent 引擎设置虚拟 healthStatus，确保立即可用
+      const isBuiltInEngine = config?.defaultEngine === 'custom-cli'
+      const virtualHealthStatus: HealthStatus = {
+        claudeAvailable: false,
+        iflowAvailable: false,
+        codexAvailable: false,
+        geminiAvailable: false,
+        customCliAvailable: isBuiltInEngine, // 内置引擎标记为可用
+        claudeVersion: '',
+        iflowVersion: '',
+        codexVersion: '',
+        geminiVersion: '',
+        configValid: true,
+      }
+      
+      set({
+        config,
+        healthStatus: virtualHealthStatus,
+        loading: false,
+        // 内置引擎立即成功，其他引擎等待完整检查
+        connectionState: isBuiltInEngine ? 'success' : 'connecting',
+      });
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : '加载配置失败',
@@ -158,7 +194,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
     } catch (error) {
       console.error('刷新健康状态失败:', error);
-      set({ connectionState: 'failed' });
+      const config = useConfigStore.getState().config;
+      set({ connectionState: config?.defaultEngine === 'custom-cli' ? 'success' : 'failed' });
     }
   },
 
@@ -166,8 +203,10 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ loading: true, error: null, connectionState: 'connecting' });
 
     try {
-      if (cliPath) {
-        const currentEngine = useConfigStore.getState().config?.defaultEngine;
+      const currentEngine = useConfigStore.getState().config?.defaultEngine;
+      const capabilities = getEngineCapabilities(currentEngine);
+
+      if (cliPath && capabilities.supportsPathValidation) {
         await setCurrentEngineCliPath(currentEngine, cliPath);
       }
 
@@ -176,12 +215,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
       if (connectionState === 'failed') {
         const engineLabel = getEngineLabel(config?.defaultEngine);
+        const errorMessage = capabilities.supportsPathValidation
+          ? `${engineLabel} CLI 未找到。当前路径: ${cliPath || '未设置'}`
+          : `${engineLabel} 当前不可用，请稍后重试。`;
         set({
           config,
           healthStatus,
           loading: false,
           connectionState,
-          error: `${engineLabel} CLI 未找到。当前路径: ${cliPath || '未设置'}`,
+          error: errorMessage,
         });
         return;
       }

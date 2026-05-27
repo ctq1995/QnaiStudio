@@ -45,6 +45,8 @@ function App() {
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [startupFailureDismissed, setStartupFailureDismissed] = useState(false);
+  const [startupCheckFinished, setStartupCheckFinished] = useState(false);
   const [workspacesHydrated, setWorkspacesHydrated] = useState(
     () => useWorkspaceStore.persist?.hasHydrated?.() ?? true,
   );
@@ -132,6 +134,11 @@ function App() {
     return currentEngineBinding?.model?.trim() || null;
   }, [currentEngineBinding]);
 
+  const shouldShowStartupFailureOverlay = !startupFailureDismissed
+    && startupCheckFinished
+    && connectionState === 'failed'
+    && currentEngine !== 'custom-cli';
+
   // 初始化配置（只执行一次）
   useEffect(() => {
     const initializeApp = async () => {
@@ -159,8 +166,12 @@ function App() {
           console.log('[App] 已从本地恢复聊天状态');
         }
 
-        // 后台刷新健康状态，不阻塞启动
-        refreshHealth();
+        // 启动阶段完成一次健康检查，用于决定是否展示首次失败提示
+        try {
+          await refreshHealth();
+        } finally {
+          setStartupCheckFinished(true);
+        }
       } catch (error) {
         console.error('[App] 初始化失败', error);
         // 失败时重置标志，允许重试
@@ -270,7 +281,11 @@ function App() {
     return () => window.removeEventListener('app:recover', handleRecover);
   }, [restoreFromStorage]);
 
-  // 监听工作区切换事件，清除聊天错误
+  useEffect(() => {
+    setStartupFailureDismissed(false);
+    setStartupCheckFinished(false);
+  }, [currentEngine]);
+
   useEffect(() => {
     const handleWorkspaceSwitched = () => {
       // 清除聊天相关的错误提示
@@ -476,7 +491,10 @@ function App() {
           />
         ) : (
           <>
-            {(isConnecting || connectionState === 'failed') && <ConnectingOverlay />}
+            {isConnecting && currentEngine !== 'custom-cli' && <ConnectingOverlay allowFailureDismiss={false} />}
+            {shouldShowStartupFailureOverlay && (
+              <ConnectingOverlay onDismissFailure={() => setStartupFailureDismissed(true)} />
+            )}
 
             <TopMenuBarComponent
               onNewConversation={() => {
@@ -576,6 +594,7 @@ function App() {
               workspaceName={currentWorkspace?.name ?? '未选择工作区'}
               workspacePath={currentWorkspace?.path ?? null}
               engineLabel={currentEngineLabel}
+              engineConnected={isCurrentEngineAvailable}
               engineVersion={currentEngineVersion}
               endpoint={currentEngineEndpoint}
               modelLabel={activeModelLabel?.trim() || currentEngineModel}

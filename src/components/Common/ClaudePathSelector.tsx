@@ -37,9 +37,9 @@ const ENGINE_CONFIG: Record<EngineType, { name: string; placeholder: string; exa
     example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\gemini.cmd',
   },
   'custom-cli': {
-    name: 'Custom CLI',
-    placeholder: '请输入 Custom CLI 的完整路径',
-    example: '例如：C:\\Users\\用户名\\AppData\\Roaming\\npm\\custom-cli.cmd',
+    name: '内置 Agent',
+    placeholder: '内置 Agent 无需配置本地 CLI 路径',
+    example: '内置 Agent 由应用内置提供，无需手动填写本地命令路径。',
   },
 };
 

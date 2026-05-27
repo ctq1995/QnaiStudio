@@ -1336,24 +1336,39 @@ function renderContentBlock(block: ContentBlock, isStreaming?: boolean): React.R
 const AssistantInlineStatus = memo(function AssistantInlineStatus({
   status,
 }: {
-  status: { kind: 'reconnecting' | 'error'; summary: string; detail: string }
+  status: { kind: 'reconnecting' | 'error' | 'permission_pending' | 'completed' | 'aborted'; summary: string; detail: string }
 }) {
   const [expanded, setExpanded] = useState(false);
 
+  const tone = status.kind === 'reconnecting'
+    ? 'border-warning/30 bg-warning-faint/60'
+    : status.kind === 'completed'
+      ? 'border-success/30 bg-success-faint/40'
+      : status.kind === 'permission_pending'
+        ? 'border-primary/30 bg-primary-faint/50'
+        : status.kind === 'aborted'
+          ? 'border-warning/30 bg-warning-faint/50'
+          : 'border-danger/30 bg-danger-faint';
+
+  const iconClass = status.kind === 'reconnecting'
+    ? 'text-warning'
+    : status.kind === 'completed'
+      ? 'text-success'
+      : status.kind === 'permission_pending'
+        ? 'text-primary'
+        : status.kind === 'aborted'
+          ? 'text-warning'
+          : 'text-danger';
+
   return (
-    <div className={clsx(
-      'rounded-lg border px-3 py-2 mb-2',
-      status.kind === 'reconnecting'
-        ? 'border-warning/30 bg-warning-faint/60'
-        : 'border-danger/30 bg-danger-faint'
-    )}>
+    <div className={clsx('rounded-lg border px-3 py-2 mb-2', tone)}>
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
         className="w-full flex items-center justify-between gap-3 text-left"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <AlertTriangle className={clsx('w-4 h-4 shrink-0', status.kind === 'reconnecting' ? 'text-warning' : 'text-danger')} />
+          <AlertTriangle className={clsx('w-4 h-4 shrink-0', iconClass)} />
           <span className="text-xs font-medium text-text-primary truncate">{status.summary}</span>
         </div>
         {expanded ? (
@@ -1394,11 +1409,11 @@ const CliStatusBar = memo(function CliStatusBar({
 function buildStreamingCliStatus(
   message: AssistantChatMessage,
   runStatus: ChatRunStatus | null,
-): { message: string; status: 'running' | 'tool' } | null {
-  if (runStatus && (runStatus.kind === 'running' || runStatus.kind === 'tool')) {
+): { message: string; status: 'running' | 'tool' | 'error' } | null {
+  if (runStatus && (runStatus.kind === 'running' || runStatus.kind === 'tool' || runStatus.kind === 'error')) {
     return {
       message: runStatus.summary,
-      status: runStatus.kind === 'tool' ? 'tool' : 'running',
+      status: runStatus.kind === 'tool' ? 'tool' : runStatus.kind === 'error' ? 'error' : 'running',
     };
   }
 
@@ -1407,6 +1422,41 @@ function buildStreamingCliStatus(
   }
 
   return null;
+}
+
+function mapRunStatusToInlineStatus(runStatus: ChatRunStatus | null): { kind: 'reconnecting' | 'error' | 'permission_pending' | 'aborted'; summary: string; detail: string } | null {
+  if (!runStatus) {
+    return null;
+  }
+
+  switch (runStatus.kind) {
+    case 'permission_pending':
+      return {
+        kind: 'permission_pending',
+        summary: runStatus.summary,
+        detail: runStatus.detail ?? 'waiting_approval',
+      };
+    case 'aborted':
+      return {
+        kind: 'aborted',
+        summary: runStatus.summary,
+        detail: runStatus.detail ?? runStatus.reason ?? 'aborted',
+      };
+    case 'error':
+      return {
+        kind: 'error',
+        summary: runStatus.summary,
+        detail: runStatus.detail ?? runStatus.reason ?? 'error',
+      };
+    case 'reconnecting':
+      return {
+        kind: 'reconnecting',
+        summary: runStatus.summary,
+        detail: runStatus.detail ?? 'reconnecting',
+      };
+    default:
+      return null;
+  }
 }
 
 /** 助手消息组件 - 使用内容块架构 */
@@ -1421,7 +1471,7 @@ const AssistantBubble = memo(function AssistantBubble({
 }) {
   const hasBlocks = message.blocks && message.blocks.length > 0;
   const isError = message.isError === true;
-  const inlineStatus = message.inlineStatus;
+  const inlineStatus = message.inlineStatus ?? mapRunStatusToInlineStatus(message.isStreaming ? runStatus ?? null : null);
   const cliStatus = buildStreamingCliStatus(message, runStatus ?? null);
 
   return (
@@ -1466,7 +1516,7 @@ const AssistantBubble = memo(function AssistantBubble({
             dangerouslySetInnerHTML={{ __html: formatContent(message.content) }}
           />
         ) : null}
-        {inlineStatus && !message.isStreaming ? <AssistantInlineStatus status={inlineStatus} /> : null}
+        {inlineStatus ? <AssistantInlineStatus status={inlineStatus} /> : null}
         {message.isStreaming && (
           <span className="inline-flex ml-1">
             <span className="flex gap-0.5 items-end h-4">

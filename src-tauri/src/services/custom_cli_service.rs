@@ -88,10 +88,10 @@ impl CustomCliService {
             command.current_dir(work_dir);
         }
 
-        if let Some(api_key) = config.custom_cli.api_key.as_deref().filter(|v| !v.is_empty()) {
+        if let Some(api_key) = config.resolve_custom_cli_api_key().filter(|v| !v.is_empty()) {
             command.env("OPENAI_API_KEY", api_key);
         }
-        if let Some(base_url) = config.custom_cli.base_url.as_deref().filter(|v| !v.is_empty()) {
+        if let Some(base_url) = config.resolve_custom_cli_base_url().filter(|v| !v.is_empty()) {
             command.env("OPENAI_BASE_URL", base_url);
         }
         if let Some(model) = config.custom_cli.model.as_deref().filter(|v| !v.is_empty()) {

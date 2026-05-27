@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn normalize_provider_kind(kind: &str) -> &'static str {
+    match kind.trim() {
+        "openai-responses" => "openai-responses",
+        "openai-chat" | "openai-compatible" | "openai-official" | "openai" => "openai-chat",
+        _ => "openai-chat",
+    }
+}
+
 // ── Advanced parameter structs ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -469,6 +477,10 @@ impl Config {
         if self.providers.is_empty() {
             self.try_migrate_legacy_provider();
         }
+
+        for provider in &mut self.providers {
+            provider.kind = normalize_provider_kind(&provider.kind).to_string();
+        }
     }
 
     pub fn get_provider(&self, provider_id: Option<&str>) -> Option<&ModelProviderConfig> {
@@ -488,7 +500,7 @@ impl Config {
             migrated.push(ModelProviderConfig {
                 id: provider_id,
                 name: "Claude 旧配置迁移".to_string(),
-                kind: "anthropic-compatible".to_string(),
+                kind: "custom".to_string(),
                 api_key: self.claude_code.api_key.clone(),
                 base_url: self.claude_code.base_url.clone(),
             });
@@ -500,7 +512,7 @@ impl Config {
             migrated.push(ModelProviderConfig {
                 id: provider_id,
                 name: "Codex 旧配置迁移".to_string(),
-                kind: "openai-compatible".to_string(),
+                kind: "openai-chat".to_string(),
                 api_key: self.codex_cli.api_key.clone(),
                 base_url: self.codex_cli.base_url.clone(),
             });
@@ -512,7 +524,7 @@ impl Config {
             migrated.push(ModelProviderConfig {
                 id: provider_id,
                 name: "Gemini 旧配置迁移".to_string(),
-                kind: "gemini-compatible".to_string(),
+                kind: "custom".to_string(),
                 api_key: self.gemini.api_key.clone(),
                 base_url: self.gemini.base_url.clone(),
             });

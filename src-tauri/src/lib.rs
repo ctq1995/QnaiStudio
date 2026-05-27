@@ -7,6 +7,10 @@ mod utils;
 use error::Result;
 use tauri::Manager;
 use models::config::{Config, HealthStatus};
+use services::agent_persistence::AgentPersistence;
+use services::agent_session::AgentSession;
+use services::agent_session_manager::AgentSessionManager;
+use services::built_in_agent_session::BuiltInAgentSession;
 use services::config_store::ConfigStore;
 use commands::chat::{start_chat, continue_chat, interrupt_chat, respond_permission};
 use commands::chat::{
@@ -21,8 +25,12 @@ use commands::window::{
 };
 use commands::file_explorer::{
     read_directory, get_file_content, create_file, create_directory,
-    delete_file, rename_file, path_exists, read_commands, search_files
+    delete_file, rename_file, path_exists, read_commands,
 };
+use commands::secure_file_tools::{
+    read_file, write_file, list_directory, search_file_contents,
+};
+use commands::git_tools::{git_status, git_diff, git_log};
 use commands::versioning::{
     list_workspace_versions, create_workspace_version, check_restore_workspace_version,
     restore_workspace_version, delete_workspace_version,
@@ -43,10 +51,25 @@ use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
+pub enum SessionRuntimeKind {
+    Process { pid: u32 },
+    BuiltIn,
+}
+
+#[derive(Debug, Clone)]
 pub struct SessionRuntime {
     pub canonical_id: String,
-    pub pid: u32,
     pub aliases: HashSet<String>,
+    pub kind: SessionRuntimeKind,
+}
+
+impl SessionRuntime {
+    pub fn pid(&self) -> Option<u32> {
+        match self.kind {
+            SessionRuntimeKind::Process { pid } => Some(pid),
+            SessionRuntimeKind::BuiltIn => None,
+        }
+    }
 }
 
 /// 全局配置状态
@@ -56,6 +79,12 @@ pub struct AppState {
     pub sessions: Arc<Mutex<HashMap<String, SessionRuntime>>>,
     /// 保存会话进程的 stdin handle，用于权限交互时向 CLI 写入批准/拒绝
     pub stdin_handles: Arc<Mutex<HashMap<String, std::process::ChildStdin>>>,
+    /// 保存通用 Agent 会话状态
+    pub agent_sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
+    /// 保存内置 Agent 会话状态
+    pub built_in_agent_sessions: Arc<Mutex<HashMap<String, BuiltInAgentSession>>>,
+    /// Agent 会话持久化管理器
+    pub agent_session_manager: AgentSessionManager,
     /// 上下文存储
     pub context_store: Arc<Mutex<ContextMemoryStore>>,
 }
@@ -353,10 +382,52 @@ async fn test_engine_connection(
             c
         }
         models::config::EngineId::CustomCli => {
-            let custom_cli_cmd = config.get_custom_cli_cmd();
-            let mut c = Command::new(&custom_cli_cmd);
-            c.arg("--version");
-            c
+            let provider_id = config
+                .custom_cli
+                .provider_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "内置 Agent 缺少服务商配置，请先选择模型服务商".to_string())?;
+
+            let provider = config
+                .providers
+                .iter()
+                .find(|item| item.id == provider_id)
+                .ok_or_else(|| format!("未找到内置 Agent 服务商: {}", provider_id))?;
+
+            let model = config
+                .custom_cli
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "内置 Agent 缺少模型配置，请先填写模型名称".to_string())?;
+
+            let provider_kind = provider.kind.trim();
+            if provider_kind != "openai-chat" && provider_kind != "openai-responses" {
+                return Err(format!("内置 Agent 当前仅支持 OpenAI Chat / OpenAI Responses，当前服务商格式为: {}", provider_kind));
+            }
+
+            let base_url = provider.base_url.as_deref().map(str::trim).unwrap_or_default();
+            if base_url.is_empty() {
+                return Err("内置 Agent 缺少 Base URL，请先完善服务商配置".to_string());
+            }
+
+            let api_key = provider.api_key.as_deref().map(str::trim).unwrap_or_default();
+            if api_key.is_empty() {
+                return Err("内置 Agent 缺少 API Key，请先完善服务商配置".to_string());
+            }
+
+            return Ok(TestConnectionResult {
+                success: true,
+                message: format!(
+                    "内置 Agent 配置可用\n服务商: {}\n请求格式: {}\n模型: {}",
+                    provider.name,
+                    provider.kind,
+                    model,
+                ),
+            });
         }
     };
 
@@ -499,6 +570,9 @@ pub fn run() {
                 config_store: Mutex::new(config_store),
                 sessions: Arc::new(Mutex::new(HashMap::new())),
                 stdin_handles: Arc::new(Mutex::new(HashMap::new())),
+                agent_sessions: Arc::new(Mutex::new(HashMap::new())),
+                built_in_agent_sessions: Arc::new(Mutex::new(HashMap::new())),
+                agent_session_manager: AgentSessionManager::new(AgentPersistence::new(std::env::temp_dir().join("qnai-agent-sessions"))),
                 context_store: Arc::new(Mutex::new(ContextMemoryStore::new())),
             });
 
@@ -558,7 +632,15 @@ pub fn run() {
             rename_file,
             path_exists,
             read_commands,
-            search_files,
+            // 安全文件工具相关
+            read_file,
+            write_file,
+            list_directory,
+            search_file_contents,
+            // Git 工具相关
+            git_status,
+            git_diff,
+            git_log,
             // 工作区版本管理
             list_workspace_versions,
             create_workspace_version,

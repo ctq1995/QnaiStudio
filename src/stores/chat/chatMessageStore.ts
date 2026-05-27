@@ -364,12 +364,21 @@ export const useChatMessageStore = create<ChatMessageState>((set, get) => ({
     })
 
     const summary = generateToolSummary(block.name, block.input, status)
+    const failureDetail = (error ?? finalOutput ?? summary ?? '').trim()
     set({
       runStatus: status === 'failed'
-        ? null
-        : { kind: 'tool', summary, detail: null, toolName: block.name, updatedAt: new Date().toISOString(), scope: 'session' },
+        ? {
+            kind: 'error',
+            summary: `工具失败: ${block.name}`,
+            detail: failureDetail || null,
+            toolName: block.name,
+            reason: 'tool_failed',
+            updatedAt: new Date().toISOString(),
+            scope: 'session',
+          }
+        : { kind: 'tool', summary, detail: null, toolName: block.name, reason: null, updatedAt: new Date().toISOString(), scope: 'session' },
       lastToolFailure: status === 'failed'
-        ? { toolId, message: (error ?? finalOutput ?? summary ?? '').trim(), pendingErrorDedup: true }
+        ? { toolId, message: failureDetail, pendingErrorDedup: true }
         : null,
     })
   },
@@ -448,7 +457,15 @@ export const useChatMessageStore = create<ChatMessageState>((set, get) => ({
     const updatedBlocks: ContentBlock[] = [...currentMsg.blocks, permissionBlock]
     set((state) => ({
       currentMessage: state.currentMessage ? { ...state.currentMessage, blocks: updatedBlocks } : null,
-      runStatus: { kind: 'running', summary: '等待权限确认...', detail: null, updatedAt: now, scope: 'session' },
+      runStatus: {
+        kind: 'permission_pending',
+        summary: '等待权限批准',
+        detail: summary ?? responseHint ?? null,
+        toolName: denials[0]?.toolName ?? null,
+        reason: 'waiting_approval',
+        updatedAt: now,
+        scope: 'session',
+      },
     }))
     get().updateCurrentAssistantMessage(updatedBlocks)
   },
@@ -469,7 +486,15 @@ export const useChatMessageStore = create<ChatMessageState>((set, get) => ({
     })
     set((state) => ({
       currentMessage: state.currentMessage ? { ...state.currentMessage, blocks: updatedBlocks } : null,
-      runStatus: { kind: 'running', summary: approved ? '已批准，继续执行...' : '已拒绝，等待 CLI 处理...', detail: null, updatedAt: now, scope: 'session' },
+      runStatus: {
+        kind: 'running',
+        summary: approved ? '已批准，继续执行...' : '已拒绝，等待 CLI 处理...',
+        detail: approved ? 'approved' : 'permission_denied',
+        toolName: null,
+        reason: approved ? 'approved' : 'permission_denied',
+        updatedAt: now,
+        scope: 'session',
+      },
     }))
     get().updateCurrentAssistantMessage(updatedBlocks)
   },

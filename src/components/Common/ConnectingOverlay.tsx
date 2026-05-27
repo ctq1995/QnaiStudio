@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useConfigStore } from '../../stores';
 import { Button, ClaudePathSelector } from './index';
 import { getEngineAvailability, getEngineVersion } from '../../types';
@@ -67,7 +67,12 @@ function getCurrentCliPath(engineId: EngineId, config: ReturnType<typeof useConf
   }
 }
 
-export function ConnectingOverlay() {
+interface ConnectingOverlayProps {
+  allowFailureDismiss?: boolean;
+  onDismissFailure?: () => void;
+}
+
+export function ConnectingOverlay({ allowFailureDismiss = true, onDismissFailure }: ConnectingOverlayProps) {
   const { config, healthStatus, connectionState, error, retryConnection } = useConfigStore();
   const [showPathInput, setShowPathInput] = useState(false);
   const currentEngine: EngineId = config?.defaultEngine ?? 'claude-code';
@@ -80,6 +85,10 @@ export function ConnectingOverlay() {
   const isConnecting = connectionState === 'connecting';
   const isFailed = connectionState === 'failed';
   const engineCapabilities = getEngineCapabilities(currentEngine);
+
+  useEffect(() => {
+    setShowPathInput(false);
+  }, [currentEngine]);
 
   if (!engineCapabilities.participatesInConnectionOverlay) {
     return null;
@@ -100,7 +109,19 @@ export function ConnectingOverlay() {
 
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-background-base/95 px-4">
-      <div className="w-full max-w-lg rounded-3xl border border-border bg-background-elevated p-6 shadow-soft">
+      <div className="relative w-full max-w-lg rounded-3xl border border-border bg-background-elevated p-6 shadow-soft">
+        {isFailed && allowFailureDismiss && onDismissFailure ? (
+          <button
+            type="button"
+            aria-label="关闭提示"
+            onClick={onDismissFailure}
+            className="absolute right-4 top-4 rounded-lg p-2 text-text-tertiary transition-colors hover:bg-background-surface hover:text-text-primary"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path strokeLinecap="round" d="M5 5l10 10M15 5L5 15" />
+            </svg>
+          </button>
+        ) : null}
         <div className="flex flex-col items-center text-center">
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-background-surface">
             {isConnecting ? (

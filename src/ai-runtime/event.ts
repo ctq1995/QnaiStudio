@@ -194,6 +194,38 @@ export interface ProgressEvent {
 
 
 
+  /** 进度分类，便于 UI 区分普通进度/工具状态/权限等待/结束原因 */
+
+
+
+  statusKind?: 'running' | 'tool' | 'permission_pending' | 'completed' | 'aborted' | 'error'
+
+
+
+  /** 结构化详情，保持协议向后兼容 */
+
+
+
+  detail?: string
+
+
+
+  /** 关联工具名（若有） */
+
+
+
+  toolName?: string
+
+
+
+  /** 原始结束原因（如 permission_denied / max_rounds） */
+
+
+
+  reason?: string
+
+
+
 }
 
 
@@ -350,7 +382,7 @@ export interface SessionEndEvent {
 
 
 
-  reason?: 'completed' | 'aborted' | 'error'
+  reason?: 'completed' | 'aborted' | 'error' | string
 
 
 

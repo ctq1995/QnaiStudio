@@ -6,6 +6,7 @@ use crate::commands::chat::utils::{
 use crate::error::Result;
 use crate::services::gemini_service::GeminiService;
 use crate::SessionRuntime;
+use crate::SessionRuntimeKind;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,7 @@ pub async fn start_gemini_chat(ctx: &ChatContext<'_>, args: &StartChatArgs) -> R
     let session_id = args.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let child = GeminiService::start_chat(&ctx.config, &args.message)?;
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &session_id, SessionRuntimeKind::Process { pid });
     spawn_gemini_reader(GeminiReaderArgs {
         child,
         session_id: session_id.clone(),
@@ -32,7 +33,7 @@ pub async fn continue_gemini_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     terminate_existing_session(&ctx.state.sessions, &args.session_id);
     let child = GeminiService::start_chat(&ctx.config, &args.message)?;
     let pid = child.id();
-    register_session_runtime(&ctx.state.sessions, &args.session_id, pid);
+    register_session_runtime(&ctx.state.sessions, &args.session_id, SessionRuntimeKind::Process { pid });
     spawn_gemini_reader(GeminiReaderArgs {
         child,
         session_id: args.session_id.clone(),
@@ -41,6 +42,7 @@ pub async fn continue_gemini_chat(ctx: &ChatContext<'_>, args: &ContinueChatArgs
     });
     Ok(())
 }
+
 
 struct GeminiReaderArgs {
     child: std::process::Child,

@@ -7,6 +7,7 @@ import { fetchModels } from '../../services/modelService';
 interface ModelInputWithFetchProps {
   engineId: string;
   value: string;
+  providerKind: 'openai-chat' | 'openai-responses';
   baseUrl: string;
   apiKey: string;
   placeholder: string;
@@ -15,11 +16,14 @@ interface ModelInputWithFetchProps {
   onChange: (value: string) => void;
 }
 
-function buildModelsEndpointPreview(baseUrl: string): string | null {
+function buildModelsEndpointPreview(providerKind: 'openai-chat' | 'openai-responses', baseUrl: string): string | null {
   const trimmed = baseUrl.trim();
   if (!trimmed) return null;
 
   const normalized = trimmed.replace(/\/+$/, '');
+  if (providerKind === 'openai-responses') {
+    return `${normalized}/responses`;
+  }
   if (normalized.endsWith('/v1/models')) {
     return normalized;
   }
@@ -47,6 +51,7 @@ function normalizeErrorMessage(error: unknown): string {
 export function ModelInputWithFetch({
   engineId,
   value,
+  providerKind,
   baseUrl,
   apiKey,
   placeholder,
@@ -62,12 +67,12 @@ export function ModelInputWithFetch({
   const modelOptions = models ?? [];
 
   const tooltip = useMemo(() => {
-    const endpoint = buildModelsEndpointPreview(baseUrl);
+    const endpoint = buildModelsEndpointPreview(providerKind, baseUrl);
     if (!endpoint) {
       return '请先填写 API Base URL';
     }
     return `接口：${endpoint}`;
-  }, [baseUrl]);
+  }, [baseUrl, providerKind]);
 
   const handleFetch = useCallback(async () => {
     const trimmedBaseUrl = baseUrl.trim();
@@ -76,10 +81,10 @@ export function ModelInputWithFetch({
       return;
     }
 
-    setIsFetching(true);
+
     setError(null);
     try {
-      const items = await fetchModels({ baseUrl: trimmedBaseUrl, apiKey });
+      const items = await fetchModels({ kind: providerKind, baseUrl: trimmedBaseUrl, apiKey });
       setModels(items);
     } catch (e) {
       setModels(null);

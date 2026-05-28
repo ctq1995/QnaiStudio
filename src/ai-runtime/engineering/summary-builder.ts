@@ -12,6 +12,8 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
   if (summary.context) {
     lines.push(`- 上下文候选文件：${summary.context.candidateFiles.length} 个`)
     lines.push(`- 项目指令文件：${summary.context.instructions.files.length} 个`)
+    lines.push(`- 上下文预算：估算 ${summary.context.budget.estimatedTokens} tokens，剩余 ${summary.context.budget.remainingTokens} tokens`)
+    if (summary.context.budget.overflow) lines.push('- 上下文预算：已超出')
     const tools = summary.context.projectSignals.buildTools.join(', ') || '未识别'
     lines.push(`- 项目信号：${tools}`)
   }

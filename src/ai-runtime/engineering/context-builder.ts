@@ -1,4 +1,5 @@
 import { loadEngineeringInstructions } from './instruction-loader'
+import { calculateContextBudget } from './token-budget'
 import type { EngineeringContext, EngineeringRunInput } from './types'
 
 export interface EngineeringContextBuilderDeps {
@@ -45,12 +46,19 @@ export async function buildEngineeringContext(
   const hasTauri = await exists('src-tauri/Cargo.toml', input.workspaceDir, deps)
   const hasFrontend = await exists('package.json', input.workspaceDir, deps)
   const packageManager = await detectPackageManager(input.workspaceDir, deps)
+  const budget = calculateContextBudget([
+    input.userRequest,
+    ...selectedFiles,
+    ...Array.from(candidateFiles),
+    instructions.merged,
+  ])
 
   const context: EngineeringContext = {
     workspaceDir: input.workspaceDir,
     selectedFiles,
     candidateFiles: Array.from(candidateFiles).sort(),
     instructions,
+    budget,
     projectSignals: {
       hasFrontend,
       hasTauri,

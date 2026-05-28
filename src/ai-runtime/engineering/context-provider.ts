@@ -1,6 +1,7 @@
 import { createDiagnosticsProvider, type EngineeringDiagnostic } from './diagnostics-provider'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
+import { createTerminalProvider, type EngineeringTerminalOutput } from './terminal-provider'
 import { estimateTokens } from './token-budget'
 import type { EngineeringInstructions } from './types'
 
@@ -30,6 +31,7 @@ export interface EngineeringContextProviderInput {
   repoMap?: EngineeringRepoMap
   fingerprint: EngineeringProjectFingerprint
   diagnostics?: EngineeringDiagnostic[]
+  terminalOutputs?: EngineeringTerminalOutput[]
 }
 
 export interface EngineeringContextProvider {
@@ -62,6 +64,7 @@ export function createDefaultEngineeringContextProviderRegistry(): EngineeringCo
   registry.register(createSelectedFilesProvider())
   registry.register(createInstructionsProvider())
   registry.register(createDiagnosticsProvider())
+  registry.register(createTerminalProvider())
   registry.register(createRepoMapProvider())
   registry.register(createFingerprintProvider())
   return registry

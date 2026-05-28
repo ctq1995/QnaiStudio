@@ -4,6 +4,7 @@ import type { EngineeringDiagnostic } from './diagnostics-provider'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
+import type { EngineeringTerminalOutput } from './terminal-provider'
 import type { EngineeringContextBudget } from './token-budget'
 
 export type EngineeringTaskKind = 'feature' | 'bugfix' | 'refactor' | 'review' | 'explain' | 'unknown'
@@ -33,6 +34,7 @@ export interface EngineeringRunInput {
   workspaceDir: string
   selectedFiles?: string[]
   diagnostics?: EngineeringDiagnostic[]
+  terminalOutputs?: EngineeringTerminalOutput[]
   permissionMode?: EngineeringPermissionMode
 }
 

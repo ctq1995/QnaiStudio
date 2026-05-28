@@ -34,10 +34,22 @@ export interface EngineeringProjectSignals {
   scripts: Record<string, string>
 }
 
+export interface EngineeringInstructionFile {
+  path: string
+  content: string
+  truncated: boolean
+}
+
+export interface EngineeringInstructions {
+  files: EngineeringInstructionFile[]
+  merged: string
+}
+
 export interface EngineeringContext {
   workspaceDir: string
   selectedFiles: string[]
   candidateFiles: string[]
+  instructions: EngineeringInstructions
   projectSignals: EngineeringProjectSignals
   summary: string
 }

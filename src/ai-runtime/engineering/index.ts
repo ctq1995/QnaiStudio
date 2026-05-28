@@ -1,5 +1,6 @@
 export * from './types'
 export * from './context-builder'
+export * from './instruction-loader'
 export * from './events'
 export * from './task-classifier'
 export * from './snapshot-policy'

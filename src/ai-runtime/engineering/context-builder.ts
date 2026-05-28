@@ -1,3 +1,4 @@
+import { loadEngineeringInstructions } from './instruction-loader'
 import type { EngineeringContext, EngineeringRunInput } from './types'
 
 export interface EngineeringContextBuilderDeps {
@@ -40,6 +41,7 @@ export async function buildEngineeringContext(
   }
 
   const scripts = await readPackageScripts(input.workspaceDir, deps)
+  const instructions = await loadEngineeringInstructions(input.workspaceDir, deps)
   const hasTauri = await exists('src-tauri/Cargo.toml', input.workspaceDir, deps)
   const hasFrontend = await exists('package.json', input.workspaceDir, deps)
   const packageManager = await detectPackageManager(input.workspaceDir, deps)
@@ -48,6 +50,7 @@ export async function buildEngineeringContext(
     workspaceDir: input.workspaceDir,
     selectedFiles,
     candidateFiles: Array.from(candidateFiles).sort(),
+    instructions,
     projectSignals: {
       hasFrontend,
       hasTauri,
@@ -105,6 +108,7 @@ function buildContextSummary(context: EngineeringContext): string {
   ]
 
   if (signals.packageManager) parts.push(`Package manager: ${signals.packageManager}`)
+  if (context.instructions.files.length > 0) parts.push(`Instruction files: ${context.instructions.files.map((file) => file.path).join(', ')}`)
   const scriptNames = Object.keys(signals.scripts)
   if (scriptNames.length > 0) parts.push(`Scripts: ${scriptNames.join(', ')}`)
 

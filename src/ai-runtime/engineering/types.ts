@@ -1,5 +1,6 @@
 import type { EngineeringAuditSummary } from './audit-recorder'
 import type { EngineeringContextProviderResult } from './context-provider'
+import type { EngineeringDiagnostic } from './diagnostics-provider'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
@@ -31,6 +32,7 @@ export interface EngineeringRunInput {
   userRequest: string
   workspaceDir: string
   selectedFiles?: string[]
+  diagnostics?: EngineeringDiagnostic[]
   permissionMode?: EngineeringPermissionMode
 }
 

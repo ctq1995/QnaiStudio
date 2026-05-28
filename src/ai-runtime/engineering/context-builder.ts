@@ -66,6 +66,7 @@ export async function buildEngineeringContext(
     instructions,
     repoMap,
     fingerprint,
+    diagnostics: input.diagnostics || [],
   })
 
   const context: EngineeringContext = {

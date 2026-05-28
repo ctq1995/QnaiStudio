@@ -4,6 +4,7 @@ import { emitEngineeringEvent } from './events'
 import { classifyEngineeringTask } from './task-classifier'
 import { decideEngineeringPermission } from './permission-policy'
 import { buildEngineeringReviewPrompt, shouldRunReview } from './review-policy'
+import { resolveEngineeringRunMode } from './run-mode-policy'
 import { createSnapshotLabel, shouldCreateSnapshot } from './snapshot-policy'
 import { buildEngineeringFinalMessage } from './summary-builder'
 import { extractChangedFilesFromDiff, selectVerificationCommands } from './verification-policy'
@@ -47,6 +48,23 @@ export class EngineeringExecutionPipeline {
     emitEngineeringEvent(this.deps.onEvent, { type: 'context_built', taskId, candidateFileCount: context.candidateFiles.length })
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
 
+    const runModeDecision = resolveEngineeringRunMode({ requestedMode: input.runMode, classification })
+
+    if (!runModeDecision.allowExecution) {
+      return finalize({
+        taskId,
+        classification,
+        context,
+        runModeDecision,
+        snapshot: { created: false },
+        agentResult: { success: true, content: 'Plan mode completed without executing agent task.' },
+        verificationResults: [],
+        review: { success: false, skipped: true },
+        audit: auditRecorder.getSummary(),
+        success: true,
+      })
+    }
+
     let snapshot: SnapshotResult = { created: false }
 
     if (shouldCreateSnapshot(classification)) {
@@ -87,6 +105,7 @@ export class EngineeringExecutionPipeline {
         taskId,
         classification,
         context,
+        runModeDecision,
         snapshot,
         agentResult,
         verificationResults: [],
@@ -192,6 +211,7 @@ export class EngineeringExecutionPipeline {
       taskId,
       classification,
       context,
+      runModeDecision,
       snapshot,
       agentResult,
       diff,

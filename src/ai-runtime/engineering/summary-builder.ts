@@ -9,6 +9,12 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
   lines.push('')
   lines.push(`- 任务类型：${summary.classification.kind}`)
   lines.push(`- 分类依据：${summary.classification.reason}`)
+  if (summary.runModeDecision) {
+    lines.push(`- 运行模式：${summary.runModeDecision.mode}`)
+    if (summary.runModeDecision.skippedStages.length > 0) {
+      lines.push(`- 跳过阶段：${summary.runModeDecision.skippedStages.join(', ')}`)
+    }
+  }
   if (summary.context) {
     lines.push(`- 上下文候选文件：${summary.context.candidateFiles.length} 个`)
     lines.push(`- 项目指令文件：${summary.context.instructions.files.length} 个`)

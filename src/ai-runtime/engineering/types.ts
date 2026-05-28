@@ -5,6 +5,7 @@ import type { EngineeringGitDiffContext } from './git-diff-provider'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
+import type { EngineeringRunMode, EngineeringRunModeDecision } from './run-mode-policy'
 import type { EngineeringTerminalOutput } from './terminal-provider'
 import type { EngineeringContextBudget } from './token-budget'
 
@@ -37,6 +38,7 @@ export interface EngineeringRunInput {
   diagnostics?: EngineeringDiagnostic[]
   terminalOutputs?: EngineeringTerminalOutput[]
   gitDiff?: EngineeringGitDiffContext
+  runMode?: EngineeringRunMode
   permissionMode?: EngineeringPermissionMode
 }
 
@@ -122,6 +124,7 @@ export interface EngineeringRunSummary {
   taskId: string
   classification: EngineeringTaskClassification
   context?: EngineeringContext
+  runModeDecision?: EngineeringRunModeDecision
   snapshot: SnapshotResult
   agentResult?: EngineeringAgentResult
   diff?: string

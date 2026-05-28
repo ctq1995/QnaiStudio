@@ -63,6 +63,9 @@ export {
 // Project Context
 export * from './project-context'
 
+// Engineering execution loop
+export * from './engineering'
+
 // CLI Parser
 export * from './cli-parser'
 

@@ -1,3 +1,6 @@
+import type { EngineeringAuditSummary } from './audit-recorder'
+import type { EngineeringPermissionMode } from './permission-policy'
+
 export type EngineeringTaskKind = 'feature' | 'bugfix' | 'refactor' | 'review' | 'explain' | 'unknown'
 
 export type EngineeringStage =
@@ -24,6 +27,7 @@ export interface EngineeringRunInput {
   userRequest: string
   workspaceDir: string
   selectedFiles?: string[]
+  permissionMode?: EngineeringPermissionMode
 }
 
 export interface EngineeringProjectSignals {
@@ -110,6 +114,7 @@ export interface EngineeringRunSummary {
   diffError?: string
   verificationResults: VerificationResult[]
   review: ReviewResult
+  audit?: EngineeringAuditSummary
   success: boolean
   failedStage?: EngineeringStage
   finalMessage: string

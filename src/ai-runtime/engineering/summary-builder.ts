@@ -44,6 +44,13 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
     lines.push(`- Review：${summary.review.success ? '完成' : '失败'}`)
   }
 
+  if (summary.audit) {
+    lines.push(`- 审计：权限记录 ${summary.audit.permissionRecords} 条，工具记录 ${summary.audit.toolRecords} 条`)
+    if (summary.audit.deniedPermissions > 0) lines.push(`- 拒绝权限：${summary.audit.deniedPermissions} 条`)
+    if (summary.audit.approvalsRequired > 0) lines.push(`- 需要确认：${summary.audit.approvalsRequired} 条`)
+    if (summary.audit.toolErrors > 0) lines.push(`- 工具错误：${summary.audit.toolErrors} 条`)
+  }
+
   lines.push(`- 结果：${summary.success ? '成功' : '失败'}`)
   if (summary.failedStage) lines.push(`- 失败阶段：${summary.failedStage}`)
   if (summary.agentResult?.error) lines.push(`- Agent 错误：${summary.agentResult.error}`)

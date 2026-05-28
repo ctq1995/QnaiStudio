@@ -1,10 +1,11 @@
+import { type EngineeringAuditRecorder, InMemoryEngineeringAuditRecorder } from './audit-recorder'
 import { buildEngineeringContext, type EngineeringContextBuilderDeps } from './context-builder'
 import { emitEngineeringEvent } from './events'
 import { classifyEngineeringTask } from './task-classifier'
+import { decideEngineeringPermission } from './permission-policy'
 import { buildEngineeringReviewPrompt, shouldRunReview } from './review-policy'
 import { createSnapshotLabel, shouldCreateSnapshot } from './snapshot-policy'
 import { buildEngineeringFinalMessage } from './summary-builder'
-import { filterAllowedVerificationCommands } from './tool-risk-policy'
 import { extractChangedFilesFromDiff, selectVerificationCommands } from './verification-policy'
 import type {
   EngineeringAgentRequest,
@@ -25,6 +26,7 @@ export interface EngineeringExecutionPipelineDeps {
   runVerification: (commands: VerificationCommand[], workspaceDir: string) => Promise<VerificationResult[]>
   runReview: (prompt: string, diff: string, workspaceDir: string) => Promise<ReviewResult>
   contextBuilder?: EngineeringContextBuilderDeps
+  auditRecorder?: EngineeringAuditRecorder
   onEvent?: EngineeringRunEventHandler
   createTaskId?: () => string
 }
@@ -34,6 +36,8 @@ export class EngineeringExecutionPipeline {
 
   async run(input: EngineeringRunInput): Promise<EngineeringRunSummary> {
     const taskId = input.taskId || this.deps.createTaskId?.() || createDefaultTaskId()
+    const auditRecorder = this.deps.auditRecorder || new InMemoryEngineeringAuditRecorder()
+    const permissionMode = input.permissionMode || 'default'
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'classify' })
     const classification = classifyEngineeringTask(input.userRequest)
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'classify' })
@@ -87,6 +91,7 @@ export class EngineeringExecutionPipeline {
         agentResult,
         verificationResults: [],
         review: { success: false, skipped: true, error: 'Agent execution failed' },
+        audit: auditRecorder.getSummary(),
         success: false,
         failedStage: 'execute',
       })
@@ -106,8 +111,34 @@ export class EngineeringExecutionPipeline {
 
     const changedFiles = diff ? extractChangedFilesFromDiff(diff) : []
     const selectedCommands = classification.requiresVerification ? selectVerificationCommands(changedFiles, context.projectSignals.scripts) : []
-    const commands = filterAllowedVerificationCommands(selectedCommands)
+    const commands: VerificationCommand[] = []
     let verificationResults: VerificationResult[] = []
+
+    for (const command of selectedCommands) {
+      const decision = decideEngineeringPermission({ mode: permissionMode, toolKind: 'shell', command: command.command })
+      auditRecorder.recordPermission({
+        type: 'permission',
+        taskId,
+        toolCallId: command.id,
+        toolName: command.label,
+        mode: permissionMode,
+        decision: decision.type,
+        reason: decision.reason,
+        createdAt: new Date().toISOString(),
+      })
+
+      if (decision.type === 'allow') {
+        commands.push(command)
+      } else {
+        verificationResults.push({
+          command,
+          success: false,
+          output: '',
+          error: decision.type === 'ask' ? `Approval required: ${decision.reason}` : `Permission denied: ${decision.reason}`,
+        })
+        auditRecorder.recordTool(createToolAuditRecord(taskId, command.id, command.label, 'skipped', new Date(), undefined, decision.reason))
+      }
+    }
 
     try {
       if (commands.length > 0) {
@@ -115,8 +146,11 @@ export class EngineeringExecutionPipeline {
         for (const command of commands) {
           emitEngineeringEvent(this.deps.onEvent, { type: 'verification_started', taskId, command })
         }
-        verificationResults = await this.deps.runVerification(commands, input.workspaceDir)
-        for (const result of verificationResults) {
+        const startedAt = new Date()
+        const executedResults = await this.deps.runVerification(commands, input.workspaceDir)
+        verificationResults = [...verificationResults, ...executedResults]
+        for (const result of executedResults) {
+          auditRecorder.recordTool(createToolAuditRecord(taskId, result.command.id, result.command.label, result.success ? 'success' : 'error', startedAt, undefined, result.error))
           emitEngineeringEvent(this.deps.onEvent, { type: 'verification_completed', taskId, command: result.command, success: result.success })
         }
         emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'verify' })
@@ -124,12 +158,16 @@ export class EngineeringExecutionPipeline {
     } catch (error) {
       const message = stringifyError(error)
       emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'verify', error: message })
-      verificationResults = commands.map((command) => ({
-        command,
-        success: false,
-        output: '',
-        error: message,
-      }))
+      const startedAt = new Date()
+      verificationResults = [...verificationResults, ...commands.map((command) => {
+        auditRecorder.recordTool(createToolAuditRecord(taskId, command.id, command.label, 'error', startedAt, undefined, message))
+        return {
+          command,
+          success: false,
+          output: '',
+          error: message,
+        }
+      })]
     }
 
     const verificationFailed = verificationResults.some((result) => !result.success)
@@ -160,6 +198,7 @@ export class EngineeringExecutionPipeline {
       diffError,
       verificationResults,
       review,
+      audit: auditRecorder.getSummary(),
       success: !diffError && !verificationFailed && (review.skipped || review.success),
       failedStage: diffError ? 'diff' : verificationFailed ? 'verify' : review.success === false && !review.skipped ? 'review' : undefined,
     })
@@ -170,6 +209,28 @@ function finalize(summary: Omit<EngineeringRunSummary, 'finalMessage'>): Enginee
   return {
     ...summary,
     finalMessage: buildEngineeringFinalMessage(summary),
+  }
+}
+
+function createToolAuditRecord(
+  taskId: string,
+  toolCallId: string,
+  toolName: string,
+  status: 'success' | 'error' | 'skipped',
+  startedAt: Date,
+  completedAt = new Date(),
+  error?: string
+) {
+  return {
+    type: 'tool' as const,
+    taskId,
+    toolCallId,
+    toolName,
+    status,
+    startedAt: startedAt.toISOString(),
+    completedAt: completedAt.toISOString(),
+    durationMs: completedAt.getTime() - startedAt.getTime(),
+    error,
   }
 }
 

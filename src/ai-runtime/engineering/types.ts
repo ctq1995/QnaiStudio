@@ -1,5 +1,6 @@
 import type { EngineeringAuditSummary } from './audit-recorder'
 import type { EngineeringPermissionMode } from './permission-policy'
+import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
 import type { EngineeringContextBudget } from './token-budget'
 
@@ -38,6 +39,7 @@ export interface EngineeringProjectSignals {
   packageManager?: string
   buildTools: string[]
   scripts: Record<string, string>
+  fingerprint: EngineeringProjectFingerprint
 }
 
 export interface EngineeringInstructionFile {

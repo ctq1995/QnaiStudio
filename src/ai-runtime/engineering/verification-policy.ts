@@ -59,7 +59,7 @@ export function selectVerificationCommands(
 
   if (touchesTauri) commands.push(TAURI_CHECK_COMMAND)
 
-  return dedupeCommands(commands)
+  return mergeVerificationCommands(commands)
 }
 
 export function truncateVerificationOutput(output: string, maxLength = 12000): string {
@@ -87,7 +87,7 @@ function pushScriptCommand(
   if (fallback) commands.push(fallback)
 }
 
-function dedupeCommands(commands: VerificationCommand[]): VerificationCommand[] {
+export function mergeVerificationCommands(commands: VerificationCommand[]): VerificationCommand[] {
   const seen = new Set<string>()
   return commands.filter((command) => {
     const key = `${command.cwd || ''}:${command.command}`

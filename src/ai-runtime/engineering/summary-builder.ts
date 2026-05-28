@@ -17,6 +17,10 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
     if (summary.context.repoMap) {
       lines.push(`- Repo Map：文件 ${summary.context.repoMap.files.length} 个，入口 ${summary.context.repoMap.entries.length} 个`)
     }
+    const fingerprint = summary.context.projectSignals.fingerprint
+    lines.push(`- 语言：${fingerprint.languages.join(', ')}`)
+    lines.push(`- 构建系统：${fingerprint.buildSystems.join(', ')}`)
+    lines.push(`- 建议验证命令：${fingerprint.suggestedVerificationCommands.length} 个`)
     const tools = summary.context.projectSignals.buildTools.join(', ') || '未识别'
     lines.push(`- 项目信号：${tools}`)
   }

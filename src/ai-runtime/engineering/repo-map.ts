@@ -1,4 +1,22 @@
-export type RepoMapFileKind = 'frontend' | 'tauri' | 'config' | 'docs' | 'test' | 'script' | 'unknown'
+export type RepoMapFileKind =
+  | 'frontend'
+  | 'tauri'
+  | 'rust'
+  | 'python'
+  | 'go'
+  | 'java'
+  | 'kotlin'
+  | 'csharp'
+  | 'php'
+  | 'ruby'
+  | 'cpp'
+  | 'dart'
+  | 'swift'
+  | 'config'
+  | 'docs'
+  | 'test'
+  | 'script'
+  | 'unknown'
 
 export interface EngineeringRepoMapFile {
   path: string
@@ -58,6 +76,17 @@ export function classifyRepoMapFile(path: string): RepoMapFileKind {
   if (/(^|\/)(tests|test|__tests__)\//.test(normalized) || /\.(test|spec)\.[tj]sx?$/.test(normalized)) return 'test'
   if (normalized.startsWith('scripts/') || /\.(ps1|sh|bat|cmd)$/.test(normalized)) return 'script'
   if (isConfigFile(normalized)) return 'config'
+  if (/\.(rs)$/.test(normalized) || normalized.endsWith('Cargo.toml')) return 'rust'
+  if (/\.(py)$/.test(normalized) || ['pyproject.toml', 'requirements.txt', 'Pipfile'].includes(normalized)) return 'python'
+  if (/\.(go)$/.test(normalized) || ['go.mod', 'go.sum'].includes(normalized)) return 'go'
+  if (/\.(java)$/.test(normalized) || normalized === 'pom.xml') return 'java'
+  if (/\.(kt|kts)$/.test(normalized) || /gradle(\.kts)?$/.test(normalized)) return 'kotlin'
+  if (/\.(cs|csproj|sln)$/.test(normalized)) return 'csharp'
+  if (/\.(php)$/.test(normalized) || normalized === 'composer.json') return 'php'
+  if (/\.(rb)$/.test(normalized) || normalized === 'Gemfile') return 'ruby'
+  if (/\.(c|cc|cpp|cxx|h|hpp)$/.test(normalized) || ['CMakeLists.txt', 'Makefile'].includes(normalized)) return 'cpp'
+  if (/\.(dart)$/.test(normalized) || normalized === 'pubspec.yaml') return 'dart'
+  if (/\.(swift)$/.test(normalized) || normalized === 'Package.swift') return 'swift'
   if (normalized.startsWith('src/') && /\.(ts|tsx|js|jsx|css)$/.test(normalized)) return 'frontend'
 
   return 'unknown'
@@ -85,6 +114,17 @@ function createEmptyKindCounts(): Record<RepoMapFileKind, number> {
   return {
     frontend: 0,
     tauri: 0,
+    rust: 0,
+    python: 0,
+    go: 0,
+    java: 0,
+    kotlin: 0,
+    csharp: 0,
+    php: 0,
+    ruby: 0,
+    cpp: 0,
+    dart: 0,
+    swift: 0,
     config: 0,
     docs: 0,
     test: 0,

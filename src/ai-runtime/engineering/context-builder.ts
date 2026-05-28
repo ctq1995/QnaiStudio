@@ -1,4 +1,5 @@
 import { loadEngineeringInstructions } from './instruction-loader'
+import { buildProjectFingerprint } from './project-fingerprint'
 import { buildEngineeringRepoMap } from './repo-map'
 import { calculateContextBudget } from './token-budget'
 import type { EngineeringContext, EngineeringRunInput } from './types'
@@ -47,6 +48,10 @@ export async function buildEngineeringContext(
   const hasTauri = await exists('src-tauri/Cargo.toml', input.workspaceDir, deps)
   const hasFrontend = await exists('package.json', input.workspaceDir, deps)
   const packageManager = await detectPackageManager(input.workspaceDir, deps)
+  const fingerprint = buildProjectFingerprint({
+    files: Array.from(candidateFiles),
+    packageScripts: scripts,
+  })
   const repoMap = buildEngineeringRepoMap(Array.from(candidateFiles))
   const budget = calculateContextBudget([
     input.userRequest,
@@ -66,8 +71,9 @@ export async function buildEngineeringContext(
       hasFrontend,
       hasTauri,
       packageManager,
-      buildTools: [hasFrontend ? 'npm' : undefined, hasTauri ? 'cargo' : undefined].filter(Boolean) as string[],
+      buildTools: fingerprint.buildSystems.filter((system) => system !== 'unknown'),
       scripts,
+      fingerprint,
     },
     summary: '',
   }

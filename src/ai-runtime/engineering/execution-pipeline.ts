@@ -1,7 +1,10 @@
+import { buildEngineeringContext, type EngineeringContextBuilderDeps } from './context-builder'
+import { emitEngineeringEvent } from './events'
 import { classifyEngineeringTask } from './task-classifier'
 import { buildEngineeringReviewPrompt, shouldRunReview } from './review-policy'
 import { createSnapshotLabel, shouldCreateSnapshot } from './snapshot-policy'
 import { buildEngineeringFinalMessage } from './summary-builder'
+import { filterAllowedVerificationCommands } from './tool-risk-policy'
 import { extractChangedFilesFromDiff, selectVerificationCommands } from './verification-policy'
 import type {
   EngineeringAgentRequest,
@@ -12,6 +15,7 @@ import type {
   SnapshotResult,
   VerificationCommand,
   VerificationResult,
+  EngineeringRunEventHandler,
 } from './types'
 
 export interface EngineeringExecutionPipelineDeps {
@@ -20,6 +24,8 @@ export interface EngineeringExecutionPipelineDeps {
   getGitDiff: (workspaceDir: string) => Promise<string>
   runVerification: (commands: VerificationCommand[], workspaceDir: string) => Promise<VerificationResult[]>
   runReview: (prompt: string, diff: string, workspaceDir: string) => Promise<ReviewResult>
+  contextBuilder?: EngineeringContextBuilderDeps
+  onEvent?: EngineeringRunEventHandler
   createTaskId?: () => string
 }
 
@@ -28,16 +34,29 @@ export class EngineeringExecutionPipeline {
 
   async run(input: EngineeringRunInput): Promise<EngineeringRunSummary> {
     const taskId = input.taskId || this.deps.createTaskId?.() || createDefaultTaskId()
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'classify' })
     const classification = classifyEngineeringTask(input.userRequest)
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'classify' })
+
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'context' })
+    const context = await buildEngineeringContext(input, this.deps.contextBuilder)
+    emitEngineeringEvent(this.deps.onEvent, { type: 'context_built', taskId, candidateFileCount: context.candidateFiles.length })
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
+
     let snapshot: SnapshotResult = { created: false }
 
     if (shouldCreateSnapshot(classification)) {
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'snapshot' })
       const label = createSnapshotLabel(classification.kind)
       try {
         const version = await this.deps.createSnapshot(label, input)
         snapshot = { created: true, label, versionId: version.versionId }
+        emitEngineeringEvent(this.deps.onEvent, { type: 'snapshot_created', taskId, versionId: version.versionId, label })
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'snapshot' })
       } catch (error) {
-        snapshot = { created: false, label, error: stringifyError(error) }
+        const message = stringifyError(error)
+        snapshot = { created: false, label, error: message }
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'snapshot', error: message })
       }
     }
 
@@ -47,9 +66,11 @@ export class EngineeringExecutionPipeline {
       workspaceDir: input.workspaceDir,
       selectedFiles: input.selectedFiles || [],
       classification,
+      context,
     }
 
     let agentResult: EngineeringAgentResult
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'execute' })
     try {
       agentResult = await this.deps.executeAgentTask(agentRequest)
     } catch (error) {
@@ -57,9 +78,11 @@ export class EngineeringExecutionPipeline {
     }
 
     if (!agentResult.success) {
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'execute', error: agentResult.error || 'Agent execution failed' })
       return finalize({
         taskId,
         classification,
+        context,
         snapshot,
         agentResult,
         verificationResults: [],
@@ -68,27 +91,44 @@ export class EngineeringExecutionPipeline {
         failedStage: 'execute',
       })
     }
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'execute' })
 
     let diff = ''
     let diffError: string | undefined
+    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'diff' })
     try {
       diff = await this.deps.getGitDiff(input.workspaceDir)
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'diff' })
     } catch (error) {
       diffError = stringifyError(error)
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'diff', error: diffError })
     }
 
     const changedFiles = diff ? extractChangedFilesFromDiff(diff) : []
-    const commands = classification.requiresVerification ? selectVerificationCommands(changedFiles) : []
+    const selectedCommands = classification.requiresVerification ? selectVerificationCommands(changedFiles, context.projectSignals.scripts) : []
+    const commands = filterAllowedVerificationCommands(selectedCommands)
     let verificationResults: VerificationResult[] = []
 
     try {
-      verificationResults = commands.length > 0 ? await this.deps.runVerification(commands, input.workspaceDir) : []
+      if (commands.length > 0) {
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'verify' })
+        for (const command of commands) {
+          emitEngineeringEvent(this.deps.onEvent, { type: 'verification_started', taskId, command })
+        }
+        verificationResults = await this.deps.runVerification(commands, input.workspaceDir)
+        for (const result of verificationResults) {
+          emitEngineeringEvent(this.deps.onEvent, { type: 'verification_completed', taskId, command: result.command, success: result.success })
+        }
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'verify' })
+      }
     } catch (error) {
+      const message = stringifyError(error)
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'verify', error: message })
       verificationResults = commands.map((command) => ({
         command,
         success: false,
         output: '',
-        error: stringifyError(error),
+        error: message,
       }))
     }
 
@@ -96,16 +136,24 @@ export class EngineeringExecutionPipeline {
     let review: ReviewResult = { success: false, skipped: true }
 
     if (!diffError && classification.requiresReview && shouldRunReview(diff)) {
+      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'review' })
       try {
         review = await this.deps.runReview(buildEngineeringReviewPrompt(diff), diff, input.workspaceDir)
+        emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: review.success, skipped: review.skipped })
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'review' })
       } catch (error) {
-        review = { success: false, error: stringifyError(error) }
+        const message = stringifyError(error)
+        review = { success: false, error: message }
+        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'review', error: message })
       }
+    } else {
+      emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: false, skipped: true })
     }
 
     return finalize({
       taskId,
       classification,
+      context,
       snapshot,
       agentResult,
       diff,

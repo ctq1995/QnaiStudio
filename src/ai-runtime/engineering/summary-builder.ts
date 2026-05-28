@@ -9,6 +9,11 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
   lines.push('')
   lines.push(`- 任务类型：${summary.classification.kind}`)
   lines.push(`- 分类依据：${summary.classification.reason}`)
+  if (summary.context) {
+    lines.push(`- 上下文候选文件：${summary.context.candidateFiles.length} 个`)
+    const tools = summary.context.projectSignals.buildTools.join(', ') || '未识别'
+    lines.push(`- 项目信号：${tools}`)
+  }
   lines.push(`- 快照：${formatSnapshot(summary.snapshot)}`)
 
   if (changedFiles.length > 0) {

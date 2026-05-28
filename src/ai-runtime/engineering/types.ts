@@ -1,5 +1,6 @@
 import type { EngineeringAuditSummary } from './audit-recorder'
 import type { EngineeringPermissionMode } from './permission-policy'
+import type { EngineeringRepoMap } from './repo-map'
 import type { EngineeringContextBudget } from './token-budget'
 
 export type EngineeringTaskKind = 'feature' | 'bugfix' | 'refactor' | 'review' | 'explain' | 'unknown'
@@ -54,6 +55,7 @@ export interface EngineeringContext {
   workspaceDir: string
   selectedFiles: string[]
   candidateFiles: string[]
+  repoMap?: EngineeringRepoMap
   instructions: EngineeringInstructions
   budget: EngineeringContextBudget
   projectSignals: EngineeringProjectSignals

@@ -14,6 +14,9 @@ export function buildEngineeringFinalMessage(summary: Omit<EngineeringRunSummary
     lines.push(`- 项目指令文件：${summary.context.instructions.files.length} 个`)
     lines.push(`- 上下文预算：估算 ${summary.context.budget.estimatedTokens} tokens，剩余 ${summary.context.budget.remainingTokens} tokens`)
     if (summary.context.budget.overflow) lines.push('- 上下文预算：已超出')
+    if (summary.context.repoMap) {
+      lines.push(`- Repo Map：文件 ${summary.context.repoMap.files.length} 个，入口 ${summary.context.repoMap.entries.length} 个`)
+    }
     const tools = summary.context.projectSignals.buildTools.join(', ') || '未识别'
     lines.push(`- 项目信号：${tools}`)
   }

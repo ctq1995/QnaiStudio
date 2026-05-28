@@ -1,4 +1,5 @@
 import { createDiagnosticsProvider, type EngineeringDiagnostic } from './diagnostics-provider'
+import { createGitDiffProvider, type EngineeringGitDiffContext } from './git-diff-provider'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
 import { createTerminalProvider, type EngineeringTerminalOutput } from './terminal-provider'
@@ -32,6 +33,7 @@ export interface EngineeringContextProviderInput {
   fingerprint: EngineeringProjectFingerprint
   diagnostics?: EngineeringDiagnostic[]
   terminalOutputs?: EngineeringTerminalOutput[]
+  gitDiff?: EngineeringGitDiffContext
 }
 
 export interface EngineeringContextProvider {
@@ -65,6 +67,7 @@ export function createDefaultEngineeringContextProviderRegistry(): EngineeringCo
   registry.register(createInstructionsProvider())
   registry.register(createDiagnosticsProvider())
   registry.register(createTerminalProvider())
+  registry.register(createGitDiffProvider())
   registry.register(createRepoMapProvider())
   registry.register(createFingerprintProvider())
   return registry

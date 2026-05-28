@@ -1,6 +1,7 @@
 import type { EngineeringAuditSummary } from './audit-recorder'
 import type { EngineeringContextProviderResult } from './context-provider'
 import type { EngineeringDiagnostic } from './diagnostics-provider'
+import type { EngineeringGitDiffContext } from './git-diff-provider'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
@@ -35,6 +36,7 @@ export interface EngineeringRunInput {
   selectedFiles?: string[]
   diagnostics?: EngineeringDiagnostic[]
   terminalOutputs?: EngineeringTerminalOutput[]
+  gitDiff?: EngineeringGitDiffContext
   permissionMode?: EngineeringPermissionMode
 }
 

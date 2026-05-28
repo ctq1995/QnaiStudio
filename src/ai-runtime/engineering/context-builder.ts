@@ -68,6 +68,7 @@ export async function buildEngineeringContext(
     fingerprint,
     diagnostics: input.diagnostics || [],
     terminalOutputs: input.terminalOutputs || [],
+    gitDiff: input.gitDiff,
   })
 
   const context: EngineeringContext = {

@@ -1,5 +1,6 @@
 export * from './types'
 export * from './context-builder'
+export * from './git-diff-provider'
 export * from './instruction-loader'
 export * from './context-provider'
 export * from './diagnostics-provider'

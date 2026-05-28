@@ -1,4 +1,5 @@
 import type { EngineeringAuditSummary } from './audit-recorder'
+import type { EngineeringContextProviderResult } from './context-provider'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringProjectFingerprint } from './project-fingerprint'
 import type { EngineeringRepoMap } from './repo-map'
@@ -60,6 +61,7 @@ export interface EngineeringContext {
   repoMap?: EngineeringRepoMap
   instructions: EngineeringInstructions
   budget: EngineeringContextBudget
+  providers: EngineeringContextProviderResult[]
   projectSignals: EngineeringProjectSignals
   summary: string
 }

@@ -1,3 +1,4 @@
+import { createDefaultEngineeringContextProviderRegistry } from './context-provider'
 import { loadEngineeringInstructions } from './instruction-loader'
 import { buildProjectFingerprint } from './project-fingerprint'
 import { buildEngineeringRepoMap } from './repo-map'
@@ -59,6 +60,13 @@ export async function buildEngineeringContext(
     ...Array.from(candidateFiles),
     instructions.merged,
   ])
+  const providerRegistry = createDefaultEngineeringContextProviderRegistry()
+  const providers = await providerRegistry.collect({
+    selectedFiles,
+    instructions,
+    repoMap,
+    fingerprint,
+  })
 
   const context: EngineeringContext = {
     workspaceDir: input.workspaceDir,
@@ -67,6 +75,7 @@ export async function buildEngineeringContext(
     repoMap,
     instructions,
     budget,
+    providers,
     projectSignals: {
       hasFrontend,
       hasTauri,

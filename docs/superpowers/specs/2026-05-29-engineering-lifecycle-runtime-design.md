@@ -51,27 +51,20 @@ SessionEnd
 
 ## 类型设计
 
-```ts
-export type EngineeringLifecycleEventType =
-  | 'SessionStart'
-  | 'TurnStart'
-  | 'UserPromptSubmit'
-  | 'ContextBuilt'
-  | 'BeforeTool'
-  | 'AfterTool'
-  | 'BeforeVerify'
-  | 'AfterVerify'
-  | 'TurnEnd'
-  | 'SessionEnd'
+生命周期事件使用 discriminated union，而不是单一 `payload?: unknown`。这样 hook 作者可以按 `event.type` 获得稳定、可收窄的事件契约。
 
-export interface EngineeringLifecycleEvent<TPayload = unknown> {
-  type: EngineeringLifecycleEventType
-  sessionId?: string
-  turnId?: string
-  taskId?: string
-  createdAt: string
-  payload?: TPayload
-}
+```ts
+export type EngineeringLifecycleEvent =
+  | (EngineeringLifecycleEventBase<'SessionStart'> & { sessionId: string })
+  | (EngineeringLifecycleEventBase<'TurnStart'> & { sessionId: string; turnId: string })
+  | (EngineeringLifecycleEventBase<'UserPromptSubmit'> & { payload: EngineeringUserPromptSubmitPayload })
+  | (EngineeringLifecycleEventBase<'ContextBuilt'> & { payload: EngineeringContextBuiltPayload })
+  | (EngineeringLifecycleEventBase<'BeforeTool'> & { payload: EngineeringBeforeToolPayload })
+  | (EngineeringLifecycleEventBase<'AfterTool'> & { payload: EngineeringAfterToolPayload })
+  | (EngineeringLifecycleEventBase<'BeforeVerify'> & { payload: EngineeringBeforeVerifyPayload })
+  | (EngineeringLifecycleEventBase<'AfterVerify'> & { payload: EngineeringAfterVerifyPayload })
+  | (EngineeringLifecycleEventBase<'TurnEnd'> & { sessionId: string; turnId: string; payload: EngineeringTurnEndPayload })
+  | (EngineeringLifecycleEventBase<'SessionEnd'> & { sessionId: string })
 
 export interface EngineeringLifecycleHook {
   id: string

@@ -60,9 +60,11 @@ export interface EngineeringTurnResult {
 
 ```text
 submit(input)
-abort(reason?)
+mark aborted state with abort(reason?)
 snapshot()
 ```
+
+第一阶段的 `abort()` 只标记 session 状态和结果，不会中断底层 pipeline 的副作用。真正的 `AbortSignal` 传播将在后续 lifecycle / runtime 阶段实现。
 
 `submit` 行为：
 

@@ -34,10 +34,7 @@ export class EngineeringTurnRunner {
   constructor(private readonly deps: EngineeringTurnRunnerDeps) {}
 
   static fromPipelineDeps(deps: EngineeringExecutionPipelineDeps, options: Omit<EngineeringTurnRunnerDeps, 'pipeline'> = {}): EngineeringTurnRunner {
-    return new EngineeringTurnRunner({
-      ...options,
-      pipeline: new EngineeringExecutionPipeline(deps),
-    })
+    return new EngineeringTurnRunner(createEngineeringTurnRunnerDepsFromPipelineDeps(deps, options))
   }
 
   async run(input: EngineeringTurnInput): Promise<EngineeringTurnResult> {
@@ -69,6 +66,16 @@ export class EngineeringTurnRunner {
 
   private emit(event: EngineeringTurnEvent): void {
     this.deps.onTurnEvent?.(event)
+  }
+}
+
+export function createEngineeringTurnRunnerDepsFromPipelineDeps(
+  deps: EngineeringExecutionPipelineDeps,
+  options: Omit<EngineeringTurnRunnerDeps, 'pipeline'> = {},
+): EngineeringTurnRunnerDeps {
+  return {
+    ...options,
+    pipeline: new EngineeringExecutionPipeline(deps),
   }
 }
 

@@ -34,7 +34,7 @@ src/ai-runtime/engineering/context-runtime.ts
 
 ```ts
 export interface EngineeringContextRuntimeDeps extends EngineeringContextBuilderDeps {
-  budgetOptions?: EngineeringContextBudgetOptions
+  projectionBudgetOptions?: EngineeringContextBudgetOptions
 }
 
 export class EngineeringContextRuntime {
@@ -70,7 +70,7 @@ export interface EngineeringContextRuntimePrepareResult {
 ```ts
 export interface EngineeringContextRuntimeSnapshot {
   capabilities: string[]
-  budgetOptions?: EngineeringContextBudgetOptions
+  projectionBudgetOptions?: EngineeringContextBudgetOptions
 }
 ```
 

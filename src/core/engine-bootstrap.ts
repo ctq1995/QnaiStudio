@@ -9,6 +9,8 @@ import { IFlowEngine } from '../engines/iflow'
 import { GeminiEngine } from '../engines/gemini'
 import { CustomCliEngine } from '../engines/custom-cli'
 
+export * from './engineering-runtime-bootstrap'
+
 export const REGISTERED_ENGINE_IDS = ['claude-code', 'codex-cli', 'custom-cli', 'iflow', 'gemini'] as const
 export type EngineId = typeof REGISTERED_ENGINE_IDS[number]
 

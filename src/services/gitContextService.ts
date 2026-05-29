@@ -115,6 +115,30 @@ export async function getGitDiffStats(
 }
 
 /**
+ * 获取 raw Git diff（unstaged + staged）
+ */
+export async function getRawGitDiff(workDir: string): Promise<string> {
+  const [unstaged, staged] = await Promise.all([
+    invoke<string>('git_diff', {
+      workspaceDir: workDir,
+      path: null,
+      staged: false,
+      commitA: null,
+      commitB: null,
+    }),
+    invoke<string>('git_diff', {
+      workspaceDir: workDir,
+      path: null,
+      staged: true,
+      commitA: null,
+      commitB: null,
+    }),
+  ]);
+
+  return [unstaged.trim(), staged.trim()].filter(Boolean).join('\n');
+}
+
+/**
  * 获取 Git 状态
  */
 export async function getGitStatus(workDir: string): Promise<GitStatus | null> {

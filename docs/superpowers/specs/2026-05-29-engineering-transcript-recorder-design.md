@@ -53,6 +53,7 @@ note
 
 ```ts
 id: string
+sequence: number
 type: EngineeringTranscriptEventType
 sessionId?: string
 turnId?: string
@@ -109,13 +110,13 @@ filterByTurn(turnId)
 createIterator()
 ```
 
-它不会重新执行工具或模型请求。
+它不会重新执行工具或模型请求。默认保留输入顺序作为回放顺序；如调用方显式要求，可按 `createdAt` 和 `sequence` 排序。
 
 ## 成功标准
 
 1. 新模块可独立使用。
 2. recorder 可记录标准 transcript event。
-3. recorder 可从 lifecycle event / turn event 生成 transcript event。
-4. memory writer 可读、可清理、返回副本。
+3. recorder 可从 lifecycle event / turn event 生成语义化 transcript event。
+4. memory writer 可读、可清理、返回深拷贝副本。
 5. replay helper 可按 session/turn 过滤。
 6. `npm run build` 通过。

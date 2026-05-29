@@ -1,3 +1,4 @@
+import { createEngineeringAutoCompactionPolicy, type EngineeringAutoCompactionOptions, type EngineeringCompactionResult } from './auto-compaction-policy'
 import { buildEngineeringContext, type EngineeringContextBuilderDeps } from './context-builder'
 import type { EngineeringMessage, ProjectedEngineeringMessages } from './message-projector'
 import { projectEngineeringMessages } from './message-projector'
@@ -17,7 +18,7 @@ export interface EngineeringContextRuntimePrepareResult {
 }
 
 export interface EngineeringContextRuntimeSnapshot {
-  capabilities: Array<'prepare' | 'projectMessages' | 'budgetToolResult' | 'buildOverflowAdvice'>
+  capabilities: Array<'prepare' | 'projectMessages' | 'budgetToolResult' | 'buildOverflowAdvice' | 'compactMessages'>
   projectionBudgetOptions?: EngineeringContextBudgetOptions
 }
 
@@ -44,9 +45,17 @@ export class EngineeringContextRuntime {
     return buildOverflowRecoveryAdvice(budget)
   }
 
+  compactMessages(messages: EngineeringMessage[], options: EngineeringAutoCompactionOptions = {}): EngineeringCompactionResult {
+    const budgetOptions = {
+      ...this.deps.projectionBudgetOptions,
+      ...options.budgetOptions,
+    }
+    return createEngineeringAutoCompactionPolicy().compact(messages, { ...options, budgetOptions })
+  }
+
   snapshot(): EngineeringContextRuntimeSnapshot {
     return {
-      capabilities: ['prepare', 'projectMessages', 'budgetToolResult', 'buildOverflowAdvice'],
+      capabilities: ['prepare', 'projectMessages', 'budgetToolResult', 'buildOverflowAdvice', 'compactMessages'],
       projectionBudgetOptions: this.deps.projectionBudgetOptions ? { ...this.deps.projectionBudgetOptions } : undefined,
     }
   }

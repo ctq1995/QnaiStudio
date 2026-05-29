@@ -56,27 +56,23 @@ src/ai-runtime/engineering/auto-compaction-policy.ts
 
 ### Full Compaction
 
-本阶段不实现 full/model compaction，只预留类型：
-
-```text
-full
-```
+本阶段不实现 full/model compaction，也不在公开 API 中暴露 full mode。后续接入模型总结时再新增该模式。
 
 ## API
 
 ```ts
-export type EngineeringCompactionMode = 'micro' | 'snip' | 'full'
+export type EngineeringCompactionMode = 'micro' | 'snip'
 
 export interface EngineeringAutoCompactionOptions {
   budgetOptions?: EngineeringContextBudgetOptions
   toolResultBudgetOptions?: ToolResultBudgetOptions
   recentMessageCount?: number
-  mode?: Exclude<EngineeringCompactionMode, 'full'>
+  mode?: EngineeringCompactionMode
 }
 
 export interface EngineeringCompactionAction {
   mode: EngineeringCompactionMode
-  messageIndex?: number
+  sourceMessageIndex?: number
   omittedChars?: number
   droppedMessages?: number
   reason: string

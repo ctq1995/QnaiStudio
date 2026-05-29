@@ -1,6 +1,7 @@
 export * from './types'
 export * from './agent-session'
 export * from './context-builder'
+export * from './auto-compaction-policy'
 export * from './context-runtime'
 export * from './git-diff-provider'
 export * from './instruction-loader'

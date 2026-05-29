@@ -12,6 +12,7 @@ pub mod agent_runtime;
 pub mod agent_tool_registry;
 pub mod built_in_agent_runtime;
 pub mod built_in_agent_session;
+pub mod tool_call_integrity;
 pub mod gemini_service;
 pub mod logger;
 pub mod iflow_service;

@@ -9,6 +9,7 @@ use crate::services::agent_profiles::built_in_code_profile;
 use crate::services::agent_session::PendingToolCall;
 use crate::services::agent_tool_registry::{default_tool_definitions, execute_tool};
 use crate::services::built_in_agent_session::{BuiltInAgentSession, PendingPermission};
+use crate::services::tool_call_integrity::repair_tool_call_integrity;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 8;
 
@@ -160,6 +161,14 @@ fn build_model_request(
         .collect::<std::result::Result<Vec<ChatMessage>, _>>()
         .map_err(crate::error::AppError::from)?;
 
+    let integrity_report = repair_tool_call_integrity(messages);
+    if !integrity_report.repairs.is_empty() {
+        tracing::warn!(
+            repair_count = integrity_report.repairs.len(),
+            "repaired built-in agent tool call integrity before model request"
+        );
+    }
+
     Ok((
         ModelAdapterConfig {
             kind: session.provider_kind.clone(),
@@ -169,7 +178,7 @@ fn build_model_request(
         ModelRequest {
             model: session.model.clone(),
             system_prompt: Some(built_in_code_profile().system_prompt.to_string()),
-            messages,
+            messages: integrity_report.messages,
             tools: default_tool_definitions(),
         },
     ))

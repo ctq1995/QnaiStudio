@@ -1,5 +1,6 @@
 import { type EngineeringAuditRecorder, InMemoryEngineeringAuditRecorder } from './audit-recorder'
-import { buildEngineeringContext, type EngineeringContextBuilderDeps } from './context-builder'
+import { createEngineeringContextRuntime, type EngineeringContextRuntime } from './context-runtime'
+import type { EngineeringContextBuilderDeps } from './context-builder'
 import { emitEngineeringEvent } from './events'
 import { classifyEngineeringTask } from './task-classifier'
 import { decideEngineeringPermission } from './permission-policy'
@@ -27,6 +28,7 @@ export interface EngineeringExecutionPipelineDeps {
   runVerification: (commands: VerificationCommand[], workspaceDir: string) => Promise<VerificationResult[]>
   runReview: (prompt: string, diff: string, workspaceDir: string) => Promise<ReviewResult>
   contextBuilder?: EngineeringContextBuilderDeps
+  contextRuntime?: EngineeringContextRuntime
   auditRecorder?: EngineeringAuditRecorder
   onEvent?: EngineeringRunEventHandler
   createTaskId?: () => string
@@ -44,7 +46,9 @@ export class EngineeringExecutionPipeline {
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'classify' })
 
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'context' })
-    const context = await buildEngineeringContext(input, this.deps.contextBuilder)
+    const contextRuntime = this.deps.contextRuntime || createEngineeringContextRuntime(this.deps.contextBuilder)
+    const contextPrepareResult = await contextRuntime.prepare(input)
+    const context = contextPrepareResult.context
     emitEngineeringEvent(this.deps.onEvent, { type: 'context_built', taskId, candidateFileCount: context.candidateFiles.length })
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
 

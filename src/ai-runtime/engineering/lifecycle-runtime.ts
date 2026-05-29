@@ -64,17 +64,28 @@ export type EngineeringLifecycleEvent =
   | (EngineeringLifecycleEventBase<'TurnEnd'> & { sessionId: string; turnId: string; payload: EngineeringTurnEndPayload })
   | (EngineeringLifecycleEventBase<'SessionEnd'> & { sessionId: string })
 
-export type EngineeringLifecycleDispatchInput = Omit<EngineeringLifecycleEvent, 'createdAt'> & { createdAt?: string }
+export type EngineeringLifecycleDispatchInput = EngineeringLifecycleEvent extends infer TEvent
+  ? TEvent extends EngineeringLifecycleEvent
+    ? Omit<TEvent, 'createdAt'> & { createdAt?: string }
+    : never
+  : never
+
+export type EngineeringLifecycleHookDecision =
+  | void
+  | { type: 'continue' }
+  | { type: 'block'; reason: string }
 
 export interface EngineeringLifecycleHook {
   id: string
   priority?: number
-  handle(event: EngineeringLifecycleEvent): void | Promise<void>
+  handle(event: EngineeringLifecycleEvent): EngineeringLifecycleHookDecision | Promise<EngineeringLifecycleHookDecision>
 }
 
 export interface EngineeringLifecycleHookResult {
   hookId: string
   success: boolean
+  decision: 'continue' | 'block'
+  blockReason?: string
   error?: string
   startedAt: string
   completedAt: string
@@ -85,6 +96,9 @@ export interface EngineeringLifecycleDispatchResult {
   event: EngineeringLifecycleEvent
   hookResults: EngineeringLifecycleHookResult[]
   failedHooks: number
+  blocked: boolean
+  blockedByHookId?: string
+  blockReason?: string
 }
 
 export interface EngineeringLifecycleRuntimeSnapshot {
@@ -136,13 +150,25 @@ export class EngineeringLifecycleRuntime {
 
     const hookResults: EngineeringLifecycleHookResult[] = []
     for (const { hook } of this.getOrderedHooks()) {
-      hookResults.push(await runHook(hook, normalizedEvent))
+      const result = await runHook(hook, normalizedEvent)
+      hookResults.push(result)
+      if (result.decision === 'block') {
+        return {
+          event: normalizedEvent,
+          hookResults,
+          failedHooks: hookResults.filter((result) => !result.success).length,
+          blocked: true,
+          blockedByHookId: result.hookId,
+          blockReason: result.blockReason,
+        }
+      }
     }
 
     return {
       event: normalizedEvent,
       hookResults,
       failedHooks: hookResults.filter((result) => !result.success).length,
+      blocked: false,
     }
   }
 
@@ -163,10 +189,12 @@ async function runHook(hook: EngineeringLifecycleHook, event: EngineeringLifecyc
   const startedAt = new Date().toISOString()
   const startedMs = Date.now()
   try {
-    await hook.handle(event)
+    const decision = normalizeHookDecision(await hook.handle(event))
     return {
       hookId: hook.id,
       success: true,
+      decision: decision.type,
+      blockReason: decision.type === 'block' ? decision.reason : undefined,
       startedAt,
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startedMs,
@@ -175,12 +203,18 @@ async function runHook(hook: EngineeringLifecycleHook, event: EngineeringLifecyc
     return {
       hookId: hook.id,
       success: false,
+      decision: 'continue',
       error: stringifyError(error),
       startedAt,
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startedMs,
     }
   }
+}
+
+function normalizeHookDecision(decision: EngineeringLifecycleHookDecision): { type: 'continue' } | { type: 'block'; reason: string } {
+  if (!decision || decision.type === 'continue') return { type: 'continue' }
+  return decision
 }
 
 function normalizePriority(priority: number | undefined): number {

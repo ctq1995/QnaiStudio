@@ -30,7 +30,23 @@ interface TaskExecution {
   abortController: AbortController
   /** 事件订阅清理函数 */
   cleanup: () => void
+  /** 是否由工程 runner 接管 */
+  engineeringManaged?: boolean
 }
+
+interface ResolvedTaskManagerConfig {
+  maxConcurrent: number
+  defaultTimeout: number
+  debug: boolean
+}
+
+export interface EngineeringTaskRunnerResult {
+  output?: unknown
+  success: boolean
+  error?: string
+}
+
+export type EngineeringTaskRunner = (task: AITask, signal: AbortSignal) => Promise<EngineeringTaskRunnerResult>
 
 /**
  * 任务优先级
@@ -67,6 +83,8 @@ export interface TaskResult<T = unknown> {
   error?: string
   /** 完成时间 */
   completedAt: number
+  /** 终态状态 */
+  status?: AITaskStatus
 }
 
 /**
@@ -89,6 +107,8 @@ export interface TaskManagerConfig {
   defaultTimeout?: number
   /** 是否启用调试 */
   debug?: boolean
+  /** 可选的工程任务执行适配器 */
+  engineeringRunner?: EngineeringTaskRunner
 }
 
 /**
@@ -101,7 +121,8 @@ export class TaskManager {
   private queue: Map<string, { task: AITask; options: TaskOptions }> = new Map()
   private executions: Map<string, TaskExecution> = new Map()
   private history: TaskResult[] = []
-  private config: Required<TaskManagerConfig>
+  private config: ResolvedTaskManagerConfig
+  private engineeringRunner?: EngineeringTaskRunner
   private processing = false
   private eventUnsub!: () => void
 
@@ -111,6 +132,7 @@ export class TaskManager {
       defaultTimeout: config.defaultTimeout ?? 300000,
       debug: config.debug ?? false,
     }
+    this.engineeringRunner = config.engineeringRunner
     this.eventBus = getEventBus({ debug: this.config.debug })
 
     // 监听 EventBus 中的 AIEvent，更新任务状态
@@ -136,7 +158,7 @@ export class TaskManager {
         if (isProgressEvent(event)) {
           // 找到对应的任务并更新进度
           this.executions.forEach((exec) => {
-            if (exec.metadata.status === 'running') {
+            if (exec.metadata.status === 'running' && !exec.engineeringManaged) {
               this.emitTaskEvent('task_progress', exec.metadata.taskId, { message: event.message })
             }
           })
@@ -165,6 +187,13 @@ export class TaskManager {
     this.eventUnsub = () => {
       unsubscribers.forEach((unsub) => unsub())
     }
+  }
+
+  /**
+   * 更新工程任务执行适配器
+   */
+  setEngineeringRunner(runner?: EngineeringTaskRunner): void {
+    this.engineeringRunner = runner
   }
 
   /**
@@ -201,10 +230,11 @@ export class TaskManager {
               success: true,
               output: event.data as T,
               completedAt: event.timestamp,
+              status: 'completed',
             })
           } else if (event.type === 'task_failed') {
             unsub()
-            reject(new Error(event.data as string))
+            reject(new Error(normalizeTaskErrorPayload(event.data)))
           } else if (event.type === 'task_aborted') {
             unsub()
             reject(new Error('Task aborted'))
@@ -221,12 +251,7 @@ export class TaskManager {
     const execution = this.executions.get(taskId)
     if (execution) {
       execution.abortController.abort()
-      execution.metadata.status = 'aborted'
-
-      this.emitTaskEvent('task_aborted', taskId)
-      this.log(`[TaskManager] Task aborted: ${taskId}`)
-
-      this.processQueue()
+      this.abortTaskExecution(taskId, 'Task aborted')
       return true
     }
     return false
@@ -249,7 +274,7 @@ export class TaskManager {
     // 检查历史
     const history = this.history.find((h) => h.taskId === taskId)
     if (history) {
-      return history.success ? 'completed' : 'failed'
+      return history.status || (history.success ? 'completed' : 'failed')
     }
 
     return undefined
@@ -387,6 +412,97 @@ export class TaskManager {
     this.emitTaskEvent('task_started', task.id, { task, options })
 
     this.log(`[TaskManager] Task started: ${task.id}`)
+
+    const engineeringRunner = this.engineeringRunner
+    if (engineeringRunner && isEngineeringTask(task)) {
+      execution.engineeringManaged = true
+      queueMicrotask(() => {
+        if (!this.isExecutionActive(execution)) return
+        void this.runEngineeringTask(execution, engineeringRunner)
+      })
+    }
+  }
+
+  private isExecutionActive(execution: TaskExecution): boolean {
+    return this.executions.get(execution.task.id) === execution && execution.metadata.status === 'running' && !execution.abortController.signal.aborted
+  }
+
+  private async runEngineeringTask(execution: TaskExecution, runner: EngineeringTaskRunner): Promise<void> {
+    if (!this.isExecutionActive(execution)) return
+
+    try {
+      const result = await runner(execution.task, execution.abortController.signal)
+      if (execution.abortController.signal.aborted) return
+
+      if (result.success) {
+        this.completeTaskExecution(execution.task.id, result.output)
+      } else {
+        this.failTaskExecution(execution.task.id, result.error || 'Engineering task failed')
+      }
+    } catch (error) {
+      if (execution.abortController.signal.aborted) return
+      this.failTaskExecution(execution.task.id, stringifyTaskError(error))
+    }
+  }
+
+  private completeTaskExecution(taskId: string, output?: unknown): void {
+    const execution = this.executions.get(taskId)
+    if (!execution || execution.metadata.status !== 'running') return
+
+    execution.cleanup()
+    execution.metadata.status = 'completed'
+    execution.metadata.endTime = Date.now()
+    this.history.push({
+      taskId,
+      success: true,
+      output,
+      completedAt: Date.now(),
+      status: 'completed',
+    })
+    this.executions.delete(taskId)
+    this.emitTaskEvent('task_completed', taskId, output)
+    this.processQueue()
+  }
+
+  private failTaskExecution(taskId: string, error: string): void {
+    const execution = this.executions.get(taskId)
+    if (!execution || execution.metadata.status !== 'running') return
+
+    execution.cleanup()
+    execution.metadata.status = 'failed'
+    execution.metadata.error = error
+    execution.metadata.endTime = Date.now()
+    this.history.push({
+      taskId,
+      success: false,
+      error,
+      completedAt: Date.now(),
+      status: 'failed',
+    })
+    this.executions.delete(taskId)
+    this.emitTaskEvent('task_failed', taskId, error)
+    this.processQueue()
+  }
+
+  private abortTaskExecution(taskId: string, reason: string): void {
+    const execution = this.executions.get(taskId)
+    if (!execution) return
+
+    execution.cleanup()
+    execution.metadata.status = 'aborted'
+    execution.metadata.error = reason
+    execution.metadata.endTime = Date.now()
+    this.history.push({
+      taskId,
+      success: false,
+      error: reason,
+      completedAt: Date.now(),
+      status: 'aborted',
+    })
+    this.executions.delete(taskId)
+    this.emitTaskEvent('task_aborted', taskId, reason)
+    this.log(`[TaskManager] Task aborted: ${taskId}`)
+    this.processQueue()
   }
 
   /**
@@ -394,26 +510,36 @@ export class TaskManager {
    */
   private completeTasksForSession(sessionId: string, reason?: string): void {
     this.executions.forEach((exec, taskId) => {
+      if (exec.engineeringManaged) return
       if (exec.metadata.sessionId === sessionId || exec.metadata.sessionId === 'pending') {
         exec.cleanup()
 
-        exec.metadata.status = reason === 'aborted' ? 'aborted' : 'completed'
+        const finalStatus: AITaskStatus = reason === 'error' ? 'failed' : reason === 'aborted' ? 'aborted' : 'completed'
+        const success = finalStatus === 'completed'
+        const error = finalStatus === 'failed' ? 'Session ended with error' : undefined
+
+        exec.metadata.status = finalStatus
+        exec.metadata.error = error
         exec.metadata.endTime = Date.now()
 
         // 记录历史
         this.history.push({
           taskId,
-          success: reason !== 'aborted' && reason !== 'error',
+          success,
+          error,
           completedAt: Date.now(),
+          status: finalStatus,
         })
 
         // 移除执行
         this.executions.delete(taskId)
 
-        if (reason === 'completed') {
+        if (finalStatus === 'completed') {
           this.emitTaskEvent('task_completed', taskId)
+        } else if (finalStatus === 'failed') {
+          this.emitTaskEvent('task_failed', taskId, error)
         } else {
-          this.emitTaskEvent('task_aborted', taskId, { reason })
+          this.emitTaskEvent('task_aborted', taskId, reason || 'aborted')
         }
 
         // 继续处理队列
@@ -427,7 +553,7 @@ export class TaskManager {
    */
   private failRunningTasks(error: string): void {
     this.executions.forEach((exec, taskId) => {
-      if (exec.metadata.status === 'running') {
+      if (exec.metadata.status === 'running' && !exec.engineeringManaged) {
         exec.cleanup()
 
         exec.metadata.status = 'failed'
@@ -440,10 +566,11 @@ export class TaskManager {
           success: false,
           error,
           completedAt: Date.now(),
+          status: 'failed',
         })
 
         this.executions.delete(taskId)
-        this.emitTaskEvent('task_failed', taskId, { error })
+        this.emitTaskEvent('task_failed', taskId, error)
 
         this.processQueue()
       }
@@ -507,6 +634,22 @@ export class TaskManager {
   }
 }
 
+function normalizeTaskErrorPayload(payload: unknown): string {
+  if (typeof payload === 'string') return payload
+  if (payload && typeof payload === 'object' && 'error' in payload) {
+    return String((payload as { error: unknown }).error)
+  }
+  return String(payload)
+}
+
+function isEngineeringTask(task: AITask): boolean {
+  return task.input.extra?.engineering === true
+}
+
+function stringifyTaskError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /**
  * 全局任务管理器
  */
@@ -518,6 +661,8 @@ let globalTaskManager: TaskManager | null = null
 export function getTaskManager(config?: TaskManagerConfig): TaskManager {
   if (!globalTaskManager) {
     globalTaskManager = new TaskManager(config)
+  } else if (config?.engineeringRunner !== undefined) {
+    globalTaskManager.setEngineeringRunner(config.engineeringRunner)
   }
   return globalTaskManager
 }

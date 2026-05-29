@@ -8,7 +8,9 @@ use crate::services::agent_session::AgentSession;
 use crate::services::agent_session_manager::AgentSessionManager;
 use crate::services::agent_tool_registry::execute_tool;
 use crate::services::built_in_agent_runtime::{
-    continue_message_events, create_session_from_config, resume_pending_tool_events, start_message_events,
+    continue_message_events, continue_message_events_with_sink, create_session_from_config,
+    resume_pending_tool_events, resume_pending_tool_events_with_sink, start_message_events,
+    start_message_events_with_sink,
 };
 use crate::services::built_in_agent_session::BuiltInAgentSession;
 
@@ -32,7 +34,10 @@ impl AgentRuntime {
         }
     }
 
-    pub fn create_built_in_session(session_id: String, config: &Config) -> Result<BuiltInAgentSession> {
+    pub fn create_built_in_session(
+        session_id: String,
+        config: &Config,
+    ) -> Result<BuiltInAgentSession> {
         create_session_from_config(session_id, config)
     }
 
@@ -48,14 +53,55 @@ impl AgentRuntime {
         Ok(events)
     }
 
-    pub async fn continue_built_in_session(&self, session_id: &str, message: &str) -> Result<Vec<StreamEvent>> {
+    pub async fn start_built_in_session_with_text_sink<F>(
+        &self,
+        session_id: String,
+        config: &Config,
+        message: &str,
+        mut on_text_delta: F,
+    ) -> Result<Vec<StreamEvent>>
+    where
+        F: FnMut(String) + Send,
+    {
+        let mut session = Self::create_built_in_session(session_id.clone(), config)?;
+        let mut sink: Option<&mut (dyn FnMut(String) + Send)> = Some(&mut on_text_delta);
+        let events = start_message_events_with_sink(&mut session, message, &mut sink).await;
+        self.store_built_in_session(session_id, session)?;
+        Ok(events)
+    }
+
+    pub async fn continue_built_in_session(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<Vec<StreamEvent>> {
         let mut session = self.take_built_in_session(session_id)?;
         let events = continue_message_events(&mut session, message).await;
         self.store_built_in_session(session_id.to_string(), session)?;
         Ok(events)
     }
 
-    pub async fn respond_built_in_permission(&self, session_id: &str, approved: bool) -> Result<Vec<StreamEvent>> {
+    pub async fn continue_built_in_session_with_text_sink<F>(
+        &self,
+        session_id: &str,
+        message: &str,
+        mut on_text_delta: F,
+    ) -> Result<Vec<StreamEvent>>
+    where
+        F: FnMut(String) + Send,
+    {
+        let mut session = self.take_built_in_session(session_id)?;
+        let mut sink: Option<&mut (dyn FnMut(String) + Send)> = Some(&mut on_text_delta);
+        let events = continue_message_events_with_sink(&mut session, message, &mut sink).await;
+        self.store_built_in_session(session_id.to_string(), session)?;
+        Ok(events)
+    }
+
+    pub async fn respond_built_in_permission(
+        &self,
+        session_id: &str,
+        approved: bool,
+    ) -> Result<Vec<StreamEvent>> {
         let mut session = self.take_built_in_session(session_id)?;
         let pending = session
             .pending_permission()
@@ -69,7 +115,51 @@ impl AgentRuntime {
             return Ok(events);
         }
 
-        crate::services::agent_permission::apply_permission_response(&mut session.agent_session, false)?;
+        crate::services::agent_permission::apply_permission_response(
+            &mut session.agent_session,
+            false,
+        )?;
+        let events = vec![
+            StreamEvent::Error {
+                error: "用户拒绝了内置 Agent 的工具调用".to_string(),
+            },
+            StreamEvent::SessionEnd {
+                reason: "permission_denied".to_string(),
+            },
+        ];
+        self.store_built_in_session(session_id.to_string(), session)?;
+        Ok(events)
+    }
+
+    pub async fn respond_built_in_permission_with_text_sink<F>(
+        &self,
+        session_id: &str,
+        approved: bool,
+        mut on_text_delta: F,
+    ) -> Result<Vec<StreamEvent>>
+    where
+        F: FnMut(String) + Send,
+    {
+        let mut session = self.take_built_in_session(session_id)?;
+        let pending = session
+            .pending_permission()
+            .cloned()
+            .ok_or_else(|| AppError::Unknown("当前会话没有待处理的权限请求".to_string()))?;
+
+        if approved {
+            let output = execute_tool(&pending.tool_name, &pending.input, session.work_dir())?;
+            let mut sink: Option<&mut (dyn FnMut(String) + Send)> = Some(&mut on_text_delta);
+            let events =
+                resume_pending_tool_events_with_sink(&mut session, &pending, output, &mut sink)
+                    .await;
+            self.store_built_in_session(session_id.to_string(), session)?;
+            return Ok(events);
+        }
+
+        crate::services::agent_permission::apply_permission_response(
+            &mut session.agent_session,
+            false,
+        )?;
         let events = vec![
             StreamEvent::Error {
                 error: "用户拒绝了内置 Agent 的工具调用".to_string(),
@@ -92,7 +182,11 @@ impl AgentRuntime {
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))
     }
 
-    fn store_built_in_session(&self, session_id: String, session: BuiltInAgentSession) -> Result<()> {
+    fn store_built_in_session(
+        &self,
+        session_id: String,
+        session: BuiltInAgentSession,
+    ) -> Result<()> {
         let agent_session = session.agent_session.clone();
 
         self.agent_sessions
@@ -143,7 +237,13 @@ mod tests {
         config
     }
 
-    fn test_runtime() -> (AgentRuntime, Arc<Mutex<HashMap<String, crate::services::agent_session::AgentSession>>>, Arc<Mutex<HashMap<String, crate::services::built_in_agent_session::BuiltInAgentSession>>>, AgentSessionManager, std::path::PathBuf) {
+    fn test_runtime() -> (
+        AgentRuntime,
+        Arc<Mutex<HashMap<String, crate::services::agent_session::AgentSession>>>,
+        Arc<Mutex<HashMap<String, crate::services::built_in_agent_session::BuiltInAgentSession>>>,
+        AgentSessionManager,
+        std::path::PathBuf,
+    ) {
         let agent_sessions = Arc::new(Mutex::new(HashMap::new()));
         let built_in_sessions = Arc::new(Mutex::new(HashMap::new()));
         let base_dir = std::env::temp_dir().join(format!(
@@ -154,8 +254,18 @@ mod tests {
                 .as_nanos()
         ));
         let manager = AgentSessionManager::new(AgentPersistence::new(base_dir.clone()));
-        let runtime = AgentRuntime::new(agent_sessions.clone(), built_in_sessions.clone(), manager.clone());
-        (runtime, agent_sessions, built_in_sessions, manager, base_dir)
+        let runtime = AgentRuntime::new(
+            agent_sessions.clone(),
+            built_in_sessions.clone(),
+            manager.clone(),
+        );
+        (
+            runtime,
+            agent_sessions,
+            built_in_sessions,
+            manager,
+            base_dir,
+        )
     }
 
     #[tokio::test]
@@ -177,11 +287,17 @@ mod tests {
             tool_name: "bash".to_string(),
             input: serde_json::json!({"command": "echo hi"}),
         });
-        let pending = session.pending_permission().cloned().expect("pending permission should exist");
+        let pending = session
+            .pending_permission()
+            .cloned()
+            .expect("pending permission should exist");
 
-        let events = resume_pending_tool_events(&mut session, &pending, "approved".to_string()).await;
+        let events =
+            resume_pending_tool_events(&mut session, &pending, "approved".to_string()).await;
 
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::ToolEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::ToolEnd { .. })));
         let tool_entries: Vec<_> = session
             .history()
             .iter()
@@ -192,8 +308,14 @@ mod tests {
             .collect();
         assert_eq!(tool_entries.len(), 1);
         let tool_entry = tool_entries[0];
-        assert_eq!(tool_entry.get("content").and_then(|value| value.as_str()), Some("approved"));
-        assert!(tool_entry.get("tool_calls").map(|value| value.is_null()).unwrap_or(true));
+        assert_eq!(
+            tool_entry.get("content").and_then(|value| value.as_str()),
+            Some("approved")
+        );
+        assert!(tool_entry
+            .get("tool_calls")
+            .map(|value| value.is_null())
+            .unwrap_or(true));
     }
 
     #[tokio::test]
@@ -226,8 +348,12 @@ mod tests {
         assert_eq!(agent_session.session_id, "session-1");
         assert_eq!(agent_session.profile_id, AgentProfileId::BuiltInCode);
         assert_eq!(persisted.session_id, "session-1");
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::ToolStart { .. })));
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::ToolStart { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
 
         let _ = std::fs::remove_dir_all(base_dir);
     }
@@ -263,9 +389,23 @@ mod tests {
             .expect("agent session stored after continue");
 
         assert_eq!(built_in_round_count, 2);
-        assert_eq!(memory_session.active_turn.as_ref().map(|turn| turn.current_round.round_index), Some(2));
-        assert_eq!(persisted.active_turn.as_ref().map(|turn| turn.current_round.round_index), Some(2));
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
+        assert_eq!(
+            memory_session
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.current_round.round_index),
+            Some(2)
+        );
+        assert_eq!(
+            persisted
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.current_round.round_index),
+            Some(2)
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
 
         let _ = std::fs::remove_dir_all(base_dir);
     }
@@ -274,7 +414,11 @@ mod tests {
     async fn approved_permission_executes_pending_tool_and_persists_history() {
         let (runtime, agent_sessions, built_in_sessions, manager, base_dir) = test_runtime();
         runtime
-            .start_built_in_session("session-3".to_string(), &test_config(), "/bash echo approved")
+            .start_built_in_session(
+                "session-3".to_string(),
+                &test_config(),
+                "/bash echo approved",
+            )
             .await
             .expect("start built-in session with approval");
 
@@ -308,15 +452,34 @@ mod tests {
             .expect("load persisted session")
             .expect("persisted session exists");
 
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::ToolEnd { .. })));
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::ToolEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { .. })));
         assert!(built_in_session.pending_permission().is_none());
         assert_eq!(built_in_session.round_count(), 1);
-        assert_eq!(memory_session.active_turn.as_ref().map(|turn| turn.current_round.round_index), Some(1));
-        assert_eq!(persisted.active_turn.as_ref().map(|turn| turn.current_round.round_index), Some(1));
+        assert_eq!(
+            memory_session
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.current_round.round_index),
+            Some(1)
+        );
+        assert_eq!(
+            persisted
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.current_round.round_index),
+            Some(1)
+        );
         assert!(memory_session.history.iter().any(|entry| {
             entry.get("role").and_then(|value| value.as_str()) == Some("tool")
-                && entry.get("tool_call_id").and_then(|value| value.as_str()).is_some()
+                && entry
+                    .get("tool_call_id")
+                    .and_then(|value| value.as_str())
+                    .is_some()
         }));
         assert!(persisted.history.iter().any(|entry| {
             entry.get("role").and_then(|value| value.as_str()) == Some("tool")
@@ -360,7 +523,9 @@ mod tests {
             .expect("load persisted session")
             .expect("persisted session exists");
 
-        assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::Error { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, crate::models::events::StreamEvent::Error { .. })));
         assert!(events.iter().any(|event| matches!(event, crate::models::events::StreamEvent::SessionEnd { reason } if reason == "permission_denied")));
         assert!(built_in_session.pending_permission().is_none());
         let memory_tool_entries: Vec<_> = memory_session
@@ -372,7 +537,12 @@ mod tests {
             })
             .collect();
         assert_eq!(memory_tool_entries.len(), 1);
-        assert_eq!(memory_tool_entries[0].get("output").and_then(|value| value.as_str()), Some("permission denied"));
+        assert_eq!(
+            memory_tool_entries[0]
+                .get("output")
+                .and_then(|value| value.as_str()),
+            Some("permission denied")
+        );
 
         let persisted_tool_entries: Vec<_> = persisted
             .history
@@ -383,7 +553,12 @@ mod tests {
             })
             .collect();
         assert_eq!(persisted_tool_entries.len(), 1);
-        assert_eq!(persisted_tool_entries[0].get("output").and_then(|value| value.as_str()), Some("permission denied"));
+        assert_eq!(
+            persisted_tool_entries[0]
+                .get("output")
+                .and_then(|value| value.as_str()),
+            Some("permission denied")
+        );
 
         let _ = std::fs::remove_dir_all(base_dir);
     }

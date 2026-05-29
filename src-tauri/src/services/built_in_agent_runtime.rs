@@ -12,6 +12,19 @@ use crate::services::built_in_agent_session::{BuiltInAgentSession, PendingPermis
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 8;
 
+type TextDeltaSink<'a> = Option<&'a mut (dyn FnMut(String) + Send)>;
+
+fn push_streamed_text_delta(
+    events: &mut Vec<StreamEvent>,
+    sink: &mut TextDeltaSink<'_>,
+    text: String,
+) {
+    if let Some(callback) = sink.as_deref_mut() {
+        callback(text.clone());
+    }
+    events.push(StreamEvent::TextDelta { text });
+}
+
 fn resolve_provider(config: &Config) -> Result<ModelProviderConfig> {
     let provider_id = config
         .custom_cli
@@ -29,7 +42,10 @@ fn resolve_provider(config: &Config) -> Result<ModelProviderConfig> {
         .ok_or_else(|| AppError::ConfigError(format!("未找到内置 Agent 服务商: {}", provider_id)))
 }
 
-pub fn create_session_from_config(session_id: String, config: &Config) -> Result<BuiltInAgentSession> {
+pub fn create_session_from_config(
+    session_id: String,
+    config: &Config,
+) -> Result<BuiltInAgentSession> {
     let provider = resolve_provider(config)?;
     let model = config
         .custom_cli
@@ -57,39 +73,56 @@ pub fn create_session_from_config(session_id: String, config: &Config) -> Result
 fn parse_tool_command(message: &str) -> Option<(String, serde_json::Value)> {
     let trimmed = message.trim();
     if let Some(path) = trimmed.strip_prefix("/read ") {
-        return Some(("read_file".to_string(), serde_json::json!({ "path": path.trim() })));
+        return Some((
+            "read_file".to_string(),
+            serde_json::json!({ "path": path.trim() }),
+        ));
     }
     if trimmed == "/git-status" {
         return Some(("git_status".to_string(), serde_json::json!({})));
     }
     if let Some(command) = trimmed.strip_prefix("/bash ") {
-        return Some(("bash".to_string(), serde_json::json!({ "command": command.trim() })));
+        return Some((
+            "bash".to_string(),
+            serde_json::json!({ "command": command.trim() }),
+        ));
     }
     None
 }
 
-fn push_tool_result_history(session: &mut BuiltInAgentSession, pending: &PendingToolCall, output: &str) {
+fn push_tool_result_history(
+    session: &mut BuiltInAgentSession,
+    pending: &PendingToolCall,
+    output: &str,
+) {
     *session.pending_permission_mut() = None;
-    session.history_mut().push(serde_json::to_value(ChatMessage {
-        role: "tool".to_string(),
-        content: Some(output.to_string()),
-        tool_call_id: Some(pending.tool_use_id.clone()),
-        tool_calls: None,
-    }).unwrap_or_else(|_| serde_json::json!({
-        "role": "tool",
-        "content": output,
-        "tool_call_id": pending.tool_use_id,
-    })));
+    session.history_mut().push(
+        serde_json::to_value(ChatMessage {
+            role: "tool".to_string(),
+            content: Some(output.to_string()),
+            tool_call_id: Some(pending.tool_use_id.clone()),
+            tool_calls: None,
+        })
+        .unwrap_or_else(|_| {
+            serde_json::json!({
+                "role": "tool",
+                "content": output,
+                "tool_call_id": pending.tool_use_id,
+            })
+        }),
+    );
 }
 
 fn push_assistant_history(session: &mut BuiltInAgentSession, message: &ChatMessage) {
-    session.history_mut().push(
-        serde_json::to_value(message).unwrap_or_else(|_| serde_json::json!({
-            "role": message.role,
-            "content": message.content,
-            "tool_calls": message.tool_calls,
-        })),
-    );
+    session
+        .history_mut()
+        .push(serde_json::to_value(message).unwrap_or_else(|_| {
+            serde_json::json!({
+                "role": message.role,
+                "content": message.content,
+                "tool_calls": message.tool_calls,
+            })
+        }));
 }
 
 fn push_tool_error_history(
@@ -98,20 +131,27 @@ fn push_tool_error_history(
     error_message: impl Into<String>,
 ) -> String {
     let output = format!("ERROR: {}", error_message.into());
-    session.history_mut().push(serde_json::to_value(ChatMessage {
-        role: "tool".to_string(),
-        content: Some(output.clone()),
-        tool_call_id: Some(tool_use_id.to_string()),
-        tool_calls: None,
-    }).unwrap_or_else(|_| serde_json::json!({
-        "role": "tool",
-        "content": output,
-        "tool_call_id": tool_use_id,
-    })));
+    session.history_mut().push(
+        serde_json::to_value(ChatMessage {
+            role: "tool".to_string(),
+            content: Some(output.clone()),
+            tool_call_id: Some(tool_use_id.to_string()),
+            tool_calls: None,
+        })
+        .unwrap_or_else(|_| {
+            serde_json::json!({
+                "role": "tool",
+                "content": output,
+                "tool_call_id": tool_use_id,
+            })
+        }),
+    );
     output
 }
 
-fn build_model_request(session: &BuiltInAgentSession) -> Result<(ModelAdapterConfig, ModelRequest)> {
+fn build_model_request(
+    session: &BuiltInAgentSession,
+) -> Result<(ModelAdapterConfig, ModelRequest)> {
     let messages = session
         .history()
         .iter()
@@ -139,8 +179,11 @@ async fn continue_model_loop(
     session: &mut BuiltInAgentSession,
     events: &mut Vec<StreamEvent>,
     initial_response: ModelResponse,
+    initial_response_streamed: bool,
+    on_text_delta: &mut TextDeltaSink<'_>,
 ) {
     let mut response = initial_response;
+    let mut response_text_streamed = initial_response_streamed;
 
     for round in 0..MAX_MODEL_TOOL_ROUNDS {
         let assistant_message = response.message;
@@ -148,8 +191,10 @@ async fn continue_model_loop(
         let assistant_text = assistant_message.content.clone().unwrap_or_default();
         push_assistant_history(session, &assistant_message);
 
-        if !assistant_text.is_empty() {
-            events.push(StreamEvent::TextDelta { text: assistant_text });
+        if !assistant_text.is_empty() && !response_text_streamed {
+            events.push(StreamEvent::TextDelta {
+                text: assistant_text,
+            });
         }
 
         if tool_calls.is_empty() {
@@ -158,22 +203,23 @@ async fn continue_model_loop(
 
         for tool_call in tool_calls {
             let tool_name = tool_call.function.name.clone();
-            let input = match serde_json::from_str::<serde_json::Value>(&tool_call.function.arguments) {
-                Ok(value) => value,
-                Err(error) => {
-                    let output = push_tool_error_history(
-                        session,
-                        &tool_call.id,
-                        format!("工具参数解析失败: {}", error),
-                    );
-                    events.push(StreamEvent::ToolEnd {
-                        tool_use_id: tool_call.id,
-                        tool_name: Some(tool_name),
-                        output: Some(output),
-                    });
-                    continue;
-                }
-            };
+            let input =
+                match serde_json::from_str::<serde_json::Value>(&tool_call.function.arguments) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let output = push_tool_error_history(
+                            session,
+                            &tool_call.id,
+                            format!("工具参数解析失败: {}", error),
+                        );
+                        events.push(StreamEvent::ToolEnd {
+                            tool_use_id: tool_call.id,
+                            tool_name: Some(tool_name),
+                            output: Some(output),
+                        });
+                        continue;
+                    }
+                };
 
             events.push(StreamEvent::ToolStart {
                 tool_use_id: tool_call.id.clone(),
@@ -226,7 +272,9 @@ async fn continue_model_loop(
         let (adapter_config, request) = match build_model_request(session) {
             Ok(value) => value,
             Err(error) => {
-                events.push(StreamEvent::Error { error: error.to_string() });
+                events.push(StreamEvent::Error {
+                    error: error.to_string(),
+                });
                 return;
             }
         };
@@ -234,22 +282,40 @@ async fn continue_model_loop(
         let adapter = match build_model_adapter(&adapter_config) {
             Ok(adapter) => adapter,
             Err(error) => {
-                events.push(StreamEvent::Error { error: error.to_string() });
+                events.push(StreamEvent::Error {
+                    error: error.to_string(),
+                });
                 return;
             }
         };
 
-        response = match adapter.request_chat_completion(request).await {
+        let mut streamed_text = false;
+        response = match adapter
+            .stream_chat_completion(
+                request,
+                Box::new(|delta| {
+                    streamed_text = true;
+                    push_streamed_text_delta(events, on_text_delta, delta);
+                }),
+            )
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
-                events.push(StreamEvent::Error { error: error.to_string() });
+                events.push(StreamEvent::Error {
+                    error: error.to_string(),
+                });
                 return;
             }
         };
+
+        response_text_streamed = streamed_text;
 
         if round + 1 == MAX_MODEL_TOOL_ROUNDS {
             events.push(StreamEvent::Error {
-                error: format!("built-in agent reached max model/tool rounds ({MAX_MODEL_TOOL_ROUNDS})"),
+                error: format!(
+                    "built-in agent reached max model/tool rounds ({MAX_MODEL_TOOL_ROUNDS})"
+                ),
             });
             return;
         }
@@ -261,6 +327,16 @@ pub async fn resume_pending_tool_events(
     pending: &PendingToolCall,
     output: String,
 ) -> Vec<StreamEvent> {
+    let mut on_text_delta = None;
+    resume_pending_tool_events_with_sink(session, pending, output, &mut on_text_delta).await
+}
+
+pub async fn resume_pending_tool_events_with_sink(
+    session: &mut BuiltInAgentSession,
+    pending: &PendingToolCall,
+    output: String,
+    on_text_delta: &mut TextDeltaSink<'_>,
+) -> Vec<StreamEvent> {
     let mut events = vec![StreamEvent::ToolEnd {
         tool_use_id: pending.tool_use_id.clone(),
         tool_name: Some(pending.tool_name.clone()),
@@ -268,16 +344,36 @@ pub async fn resume_pending_tool_events(
     }];
     push_tool_result_history(session, pending, &output);
 
+    let mut follow_up_streamed = false;
     let follow_up = match build_model_request(session) {
         Ok((adapter_config, request)) => match build_model_adapter(&adapter_config) {
-            Ok(adapter) => adapter.request_chat_completion(request).await,
+            Ok(adapter) => {
+                adapter
+                    .stream_chat_completion(
+                        request,
+                        Box::new(|delta| {
+                            follow_up_streamed = true;
+                            push_streamed_text_delta(&mut events, on_text_delta, delta);
+                        }),
+                    )
+                    .await
+            }
             Err(error) => Err(error),
         },
         Err(error) => Err(error),
     };
 
     match follow_up {
-        Ok(response) => continue_model_loop(session, &mut events, response).await,
+        Ok(response) => {
+            continue_model_loop(
+                session,
+                &mut events,
+                response,
+                follow_up_streamed,
+                on_text_delta,
+            )
+            .await
+        }
         Err(error) => events.push(StreamEvent::Error {
             error: error.to_string(),
         }),
@@ -290,7 +386,12 @@ pub async fn resume_pending_tool_events(
     events
 }
 
-async fn run_message(session: &mut BuiltInAgentSession, message: &str, progress_message: &str) -> Vec<StreamEvent> {
+async fn run_message(
+    session: &mut BuiltInAgentSession,
+    message: &str,
+    progress_message: &str,
+    on_text_delta: &mut TextDeltaSink<'_>,
+) -> Vec<StreamEvent> {
     let mut events = vec![StreamEvent::System {
         subtype: Some("progress".to_string()),
         extra: std::collections::HashMap::from([(
@@ -299,16 +400,23 @@ async fn run_message(session: &mut BuiltInAgentSession, message: &str, progress_
         )]),
     }];
 
-    session.history_mut().push(serde_json::to_value(ChatMessage {
-        role: "user".to_string(),
-        content: Some(message.to_string()),
-        tool_call_id: None,
-        tool_calls: None,
-    }).unwrap_or_else(|_| serde_json::json!({ "role": "user", "content": message })));
+    session.history_mut().push(
+        serde_json::to_value(ChatMessage {
+            role: "user".to_string(),
+            content: Some(message.to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        })
+        .unwrap_or_else(|_| serde_json::json!({ "role": "user", "content": message })),
+    );
 
     if let Some((tool_name, input)) = parse_tool_command(message) {
         let input_for_pending = input.clone();
-        let tool_use_id = format!("{}-tool-{}", session.session_id(), session.round_count() + 1);
+        let tool_use_id = format!(
+            "{}-tool-{}",
+            session.session_id(),
+            session.round_count() + 1
+        );
         events.push(StreamEvent::ToolStart {
             tool_use_id: tool_use_id.clone(),
             tool_name: tool_name.clone(),
@@ -365,16 +473,35 @@ async fn run_message(session: &mut BuiltInAgentSession, message: &str, progress_
 
         match llm_request {
             Ok((adapter_config, request)) => match build_model_adapter(&adapter_config) {
-                Ok(adapter) => match adapter.request_chat_completion(request).await {
-                    Ok(response) => {
-                        continue_model_loop(session, &mut events, response).await;
+                Ok(adapter) => {
+                    let mut streamed_text = false;
+                    match adapter
+                        .stream_chat_completion(
+                            request,
+                            Box::new(|delta| {
+                                streamed_text = true;
+                                push_streamed_text_delta(&mut events, on_text_delta, delta);
+                            }),
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            continue_model_loop(
+                                session,
+                                &mut events,
+                                response,
+                                streamed_text,
+                                on_text_delta,
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            events.push(StreamEvent::Error {
+                                error: error.to_string(),
+                            });
+                        }
                     }
-                    Err(error) => {
-                        events.push(StreamEvent::Error {
-                            error: error.to_string(),
-                        });
-                    }
-                },
+                }
                 Err(error) => {
                     events.push(StreamEvent::Error {
                         error: error.to_string(),
@@ -429,11 +556,31 @@ mod tests {
 
         // 验证系统提示词包含工程开发工具
         assert!(request.system_prompt.as_deref().unwrap().contains("grep"));
-        assert!(request.system_prompt.as_deref().unwrap().contains("list_tree"));
-        assert!(request.system_prompt.as_deref().unwrap().contains("check_project"));
-        assert!(request.system_prompt.as_deref().unwrap().contains("read_file_range"));
-        assert!(request.system_prompt.as_deref().unwrap().contains("todo_write"));
-        assert!(request.system_prompt.as_deref().unwrap().contains("enter_plan_mode"));
+        assert!(request
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("list_tree"));
+        assert!(request
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("check_project"));
+        assert!(request
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("read_file_range"));
+        assert!(request
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("todo_write"));
+        assert!(request
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("enter_plan_mode"));
         assert!(request.messages.is_empty());
         // 验证低风险工具可见
         assert!(tool_names.contains(&"read_file"));
@@ -463,11 +610,15 @@ mod tests {
         assert_eq!(output, "ERROR: boom");
         assert_eq!(session.history().len(), 1);
         assert_eq!(
-            session.history()[0].get("tool_call_id").and_then(|value| value.as_str()),
+            session.history()[0]
+                .get("tool_call_id")
+                .and_then(|value| value.as_str()),
             Some("tool-1")
         );
         assert_eq!(
-            session.history()[0].get("content").and_then(|value| value.as_str()),
+            session.history()[0]
+                .get("content")
+                .and_then(|value| value.as_str()),
             Some("ERROR: boom")
         );
     }
@@ -479,10 +630,46 @@ mod tests {
     }
 }
 
-pub async fn start_message_events(session: &mut BuiltInAgentSession, message: &str) -> Vec<StreamEvent> {
-    run_message(session, message, "built-in agent started").await
+pub async fn start_message_events(
+    session: &mut BuiltInAgentSession,
+    message: &str,
+) -> Vec<StreamEvent> {
+    let mut on_text_delta = None;
+    run_message(
+        session,
+        message,
+        "built-in agent started",
+        &mut on_text_delta,
+    )
+    .await
 }
 
-pub async fn continue_message_events(session: &mut BuiltInAgentSession, message: &str) -> Vec<StreamEvent> {
-    run_message(session, message, "built-in agent continued").await
+pub async fn continue_message_events(
+    session: &mut BuiltInAgentSession,
+    message: &str,
+) -> Vec<StreamEvent> {
+    let mut on_text_delta = None;
+    run_message(
+        session,
+        message,
+        "built-in agent continued",
+        &mut on_text_delta,
+    )
+    .await
+}
+
+pub async fn start_message_events_with_sink(
+    session: &mut BuiltInAgentSession,
+    message: &str,
+    on_text_delta: &mut TextDeltaSink<'_>,
+) -> Vec<StreamEvent> {
+    run_message(session, message, "built-in agent started", on_text_delta).await
+}
+
+pub async fn continue_message_events_with_sink(
+    session: &mut BuiltInAgentSession,
+    message: &str,
+    on_text_delta: &mut TextDeltaSink<'_>,
+) -> Vec<StreamEvent> {
+    run_message(session, message, "built-in agent continued", on_text_delta).await
 }

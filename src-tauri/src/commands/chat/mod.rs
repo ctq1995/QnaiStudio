@@ -1,7 +1,12 @@
 use crate::error::{AppError, Result};
 use crate::models::config::{Config, EngineId};
+use crate::models::events::StreamEvent;
 use crate::SessionRuntimeKind;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::{State, Window};
 
 mod claude;
@@ -60,7 +65,11 @@ pub struct ChatContext<'a> {
 
 impl<'a> ChatContext<'a> {
     fn new(window: Window, state: State<'a, crate::AppState>, config: Config) -> Self {
-        Self { window, state, config }
+        Self {
+            window,
+            state,
+            config,
+        }
     }
 }
 
@@ -162,21 +171,31 @@ pub async fn respond_permission(
     let approved = payload.approved;
 
     let runtime_kind = {
-        let sessions = state.sessions.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-        sessions.get(&session_id).map(|runtime| runtime.kind.clone())
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|e| AppError::Unknown(e.to_string()))?;
+        sessions
+            .get(&session_id)
+            .map(|runtime| runtime.kind.clone())
     };
 
     match runtime_kind {
         Some(SessionRuntimeKind::Process { .. }) => {
-            let mut handles = state.stdin_handles.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+            let mut handles = state
+                .stdin_handles
+                .lock()
+                .map_err(|e| AppError::Unknown(e.to_string()))?;
             let stdin = handles
                 .get_mut(&session_id)
                 .ok_or_else(|| AppError::SessionNotFound(session_id.clone()))?;
 
             use std::io::Write;
-            stdin.write_all(if approved { b"y\n" } else { b"n\n" })
+            stdin
+                .write_all(if approved { b"y\n" } else { b"n\n" })
                 .map_err(|e| AppError::Unknown(format!("写入 stdin 失败: {}", e)))?;
-            stdin.flush()
+            stdin
+                .flush()
                 .map_err(|e| AppError::Unknown(format!("flush stdin 失败: {}", e)))?;
             Ok(())
         }
@@ -186,8 +205,26 @@ pub async fn respond_permission(
                 state.built_in_agent_sessions.clone(),
                 state.agent_session_manager.clone(),
             );
-            let events = runtime.respond_built_in_permission(&session_id, approved).await?;
+            let emitted_text_delta = Arc::new(AtomicBool::new(false));
+            let emitted_text_delta_for_sink = emitted_text_delta.clone();
+            let window_for_sink = window.clone();
+            let session_id_for_sink = session_id.clone();
+            let events = runtime
+                .respond_built_in_permission_with_text_sink(&session_id, approved, move |text| {
+                    emitted_text_delta_for_sink.store(true, Ordering::SeqCst);
+                    utils::emit_stream_event(
+                        &window_for_sink,
+                        &StreamEvent::TextDelta { text },
+                        &session_id_for_sink,
+                    );
+                })
+                .await?;
             for event in events {
+                if emitted_text_delta.load(Ordering::SeqCst)
+                    && matches!(event, StreamEvent::TextDelta { .. })
+                {
+                    continue;
+                }
                 utils::emit_stream_event(&window, &event, &session_id);
             }
             Ok(())
@@ -201,11 +238,10 @@ fn resolve_engine_id(engine_id: Option<&str>, config: &Config) -> EngineId {
     EngineId::from_str(engine_id_str).unwrap_or(DEFAULT_ENGINE)
 }
 
-fn resolve_config(
-    state: &State<'_, crate::AppState>,
-    work_dir: Option<&str>,
-) -> Result<Config> {
-    let config_store = state.config_store.lock()
+fn resolve_config(state: &State<'_, crate::AppState>, work_dir: Option<&str>) -> Result<Config> {
+    let config_store = state
+        .config_store
+        .lock()
         .map_err(|e| AppError::Unknown(e.to_string()))?;
     let mut config = config_store.get().clone();
 

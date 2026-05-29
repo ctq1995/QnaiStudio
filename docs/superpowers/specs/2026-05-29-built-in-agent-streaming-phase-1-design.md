@@ -4,19 +4,18 @@
 
 自研 Agent 当前使用非流式模型调用。OpenAI Chat 适配器请求中 `stream: false`，runtime 等待完整 `ModelResponse` 后才一次性发出 `TextDelta`，导致用户看到的是“等待很久后一次性输出”。
 
-本设计实现第一阶段流式输出：仅对没有工具调用的 OpenAI Chat 普通文本请求启用 SSE streaming。带工具调用的请求继续走现有非流式路径，避免破坏 tool calls。
+本设计实现第一阶段流式输出：OpenAI Chat 通过 SSE streaming 输出文本 delta，并累积流式 tool call 分片以保持现有工具调用状态机可用。OpenAI Responses 适配器继续走默认非流式路径。
 
 ## 目标
 
 1. OpenAI Chat 普通文本响应实时输出。
 2. 每个文本 delta 立即转为 `StreamEvent::TextDelta`。
 3. 最终仍拼接完整 assistant message 并写入 session history。
-4. 有 tools 的请求保持现有非流式行为。
+4. 流式 tool call 分片被累积为完整 `ToolCall`，继续复用现有工具执行逻辑。
 5. OpenAI Responses 适配器暂不变。
 
 ## 非目标
 
-- 不实现 streaming tool_calls。
 - 不修改前端 UI。
 - 不修改 Claude/Codex/Gemini CLI 流式逻辑。
 - 不重构整个 Agent runtime。
@@ -91,9 +90,9 @@ ModelResponse {
 - 返回的完整 response 仍用于 history。
 - 因为无 tools，后续不会触发工具调用。
 
-### 限制
+### 命令层实时 emit
 
-当前 runtime 仍返回 `Vec<StreamEvent>`，所以如果 Tauri 命令层本身批量返回事件，则后续还需要第二阶段改为边生成边 emit。第一阶段先让 adapter/runtime 具备 delta 事件粒度。
+自研 Agent 的 Tauri 命令层需要把 streaming callback 收到的文本 delta 立即 `emit_chat_event` 给前端。runtime 仍返回完整事件列表用于兼容现有流程；命令层在已经实时发送文本 delta 时跳过返回列表中的重复 `TextDelta`。
 
 ## 成功标准
 

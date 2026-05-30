@@ -15,16 +15,18 @@ export function createWaitableBuiltInAgentRunner(input: WaitableBuiltInAgentRunn
   return async (request) => {
     const eventBus = input.eventBus || getEventBus()
     const outputs: string[] = []
-    const cleanupOutput = input.collectOutput
-      ? eventBus.onAny((event: AIEvent) => {
-          const output = input.collectOutput?.(event)
-          if (output) outputs.push(output)
-        })
-      : undefined
+    let cleanupOutput: (() => void) | undefined
 
     try {
       const runtime = input.aiRuntime || createRuntimeFromConfig(input.aiRuntimeConfig, request.workspaceDir)
       const sessionId = await runtime.sendMessage(buildAgentPrompt(request))
+      const collectSessionOutput = (event: AIEvent) => {
+        if (event.sessionId !== sessionId) return
+        const output = input.collectOutput ? input.collectOutput(event) : collectDefaultOutput(event)
+        if (output) outputs.push(output)
+      }
+      eventBus.getHistory().forEach(collectSessionOutput)
+      cleanupOutput = eventBus.onAny(collectSessionOutput)
       const result = await waitForSessionEnd(eventBus, sessionId, input.timeoutMs)
 
       if (result.error) {
@@ -97,6 +99,21 @@ function buildAgentPrompt(request: Parameters<EngineeringExecutionPipelineDeps['
   }
 
   return sections.join('\n')
+}
+
+function collectDefaultOutput(event: AIEvent): string | undefined {
+  switch (event.type) {
+    case 'assistant_message':
+      return event.content
+    case 'token':
+      return event.value
+    case 'tool_call_output':
+      return event.output
+    case 'result':
+      return typeof event.output === 'string' ? event.output : JSON.stringify(event.output)
+    default:
+      return undefined
+  }
 }
 
 function isSessionEndEvent(event: AIEvent): event is SessionEndEvent {

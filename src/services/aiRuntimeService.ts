@@ -301,7 +301,7 @@ case 'progress':
 
 
 
-  return events
+  return events.map((event) => attachEventScope(event, streamEvent, sessionId))
 
 }
 
@@ -313,6 +313,43 @@ case 'progress':
 
  */
 
+function attachEventScope(event: AIEvent, streamEvent: StreamEvent, fallbackSessionId: string): AIEvent {
+  const scope = extractEventScope(streamEvent, fallbackSessionId)
+  return {
+    ...event,
+    ...definedScope({
+      sessionId: event.sessionId || scope.sessionId || fallbackSessionId,
+      turnId: event.turnId || scope.turnId,
+      taskId: event.taskId || scope.taskId,
+    }),
+  }
+}
+
+function definedScope(scope: { sessionId?: string; turnId?: string; taskId?: string }): { sessionId?: string; turnId?: string; taskId?: string } {
+  return Object.fromEntries(Object.entries(scope).filter(([, value]) => value !== undefined))
+}
+
+function extractEventScope(streamEvent: StreamEvent, fallbackSessionId: string): { sessionId?: string; turnId?: string; taskId?: string } {
+  const extra = readScopeObject(streamEvent, 'extra')
+  return {
+    sessionId: readScopeString(streamEvent, 'sessionId') || readScopeString(streamEvent, 'session_id') || readScopeString(extra, 'sessionId') || readScopeString(extra, 'session_id') || fallbackSessionId,
+    turnId: readScopeString(streamEvent, 'turnId') || readScopeString(streamEvent, 'turn_id') || readScopeString(extra, 'turnId') || readScopeString(extra, 'turn_id'),
+    taskId: readScopeString(streamEvent, 'taskId') || readScopeString(streamEvent, 'task_id') || readScopeString(extra, 'taskId') || readScopeString(extra, 'task_id'),
+  }
+}
+
+function readScopeObject(source: unknown, key: string): object | undefined {
+  if (!source || typeof source !== 'object' || !(key in source)) return undefined
+  const value = (source as Record<string, unknown>)[key]
+  return value && typeof value === 'object' ? value : undefined
+}
+
+function readScopeString(source: unknown, key: string): string | undefined {
+  if (!source || typeof source !== 'object' || !(key in source)) return undefined
+  const value = (source as Record<string, unknown>)[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 export interface AIRuntimeConfig {
 
   /** 工作区目录 */
@@ -887,9 +924,15 @@ function parseChatEventPayload(payload: unknown): StreamEvent | null {
 
 function getPayloadSessionId(streamEvent: StreamEvent): string | null {
 
+  const extra = readScopeObject(streamEvent, 'extra')
+
   const candidate = (streamEvent as { session_id?: unknown; sessionId?: unknown }).session_id ??
 
-    (streamEvent as { session_id?: unknown; sessionId?: unknown }).sessionId
+    (streamEvent as { session_id?: unknown; sessionId?: unknown }).sessionId ??
+
+    readScopeString(extra, 'session_id') ??
+
+    readScopeString(extra, 'sessionId')
 
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : null
 

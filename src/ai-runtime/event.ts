@@ -860,7 +860,16 @@ export interface PermissionDenialInfo {
   details?: Record<string, unknown>
 }
 
-export type AIEvent =
+export interface AIEventScope {
+  /** Runtime session ownership for correlating stream/tool/result events */
+  sessionId?: string
+  /** Engineering runtime turn ownership */
+  turnId?: string
+  /** Engineering task ownership */
+  taskId?: string
+}
+
+export type AIEvent = (
 
 
 
@@ -925,6 +934,7 @@ export type AIEvent =
 
 
 
+) & AIEventScope
 
 
 

@@ -1,6 +1,7 @@
 import type { AIEvent } from '../ai-runtime/event'
 import { getEventBus, type EventBus } from '../ai-runtime/event-bus'
 import type { EngineeringTranscriptRecorder, EngineeringTranscriptRecordInput, EngineeringTranscriptEventType } from '../ai-runtime/engineering'
+import { createTranscriptPayloadPolicy, type TranscriptPayloadPolicy } from './transcriptPayloadPolicy'
 
 export interface AIEventTranscriptAutoWiringInput {
   recorder?: EngineeringTranscriptRecorder
@@ -10,6 +11,7 @@ export interface AIEventTranscriptAutoWiringInput {
   includeUnscoped?: boolean
   filter?: (event: AIEvent) => boolean
   mapPayload?: (event: AIEvent) => unknown
+  payloadPolicy?: TranscriptPayloadPolicy
   onError?: (error: unknown) => void
 }
 
@@ -44,8 +46,14 @@ function mapAIEventToTranscriptInput(event: AIEvent, input: AIEventTranscriptAut
     turnId: event.turnId,
     taskId: event.taskId,
     createdAt: new Date(readEventTimestamp(event)).toISOString(),
-    payload: input.mapPayload ? input.mapPayload(event) : event,
+    payload: applyPayloadPolicy(event, input),
   }
+}
+
+function applyPayloadPolicy(event: AIEvent, input: AIEventTranscriptAutoWiringInput): unknown {
+  const payload = input.mapPayload ? input.mapPayload(event) : event
+  const policy = input.payloadPolicy || createTranscriptPayloadPolicy()
+  return policy(payload)
 }
 
 function readEventTimestamp(event: AIEvent): number {

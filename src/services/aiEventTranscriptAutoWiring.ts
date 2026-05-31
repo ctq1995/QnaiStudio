@@ -3,7 +3,8 @@ import { getEventBus, type EventBus } from '../ai-runtime/event-bus'
 import type { EngineeringTranscriptRecorder, EngineeringTranscriptRecordInput, EngineeringTranscriptEventType } from '../ai-runtime/engineering'
 
 export interface AIEventTranscriptAutoWiringInput {
-  recorder: EngineeringTranscriptRecorder
+  recorder?: EngineeringTranscriptRecorder
+  record?: (input: EngineeringTranscriptRecordInput<unknown>) => Promise<void>
   eventBus?: EventBus
   sessionId?: string
   includeUnscoped?: boolean
@@ -16,7 +17,13 @@ export function registerAIEventTranscriptAutoWiring(input: AIEventTranscriptAuto
   const eventBus = input.eventBus || getEventBus()
   const listener = (event: AIEvent) => {
     if (!shouldRecordEvent(event, input)) return
-    void input.recorder.record(mapAIEventToTranscriptInput(event, input)).catch((error) => {
+    const recordInput = mapAIEventToTranscriptInput(event, input)
+    const write = input.record ? input.record(recordInput) : input.recorder?.record(recordInput).then(() => undefined)
+    if (!write) {
+      input.onError?.(new Error('AIEvent transcript auto wiring requires recorder or record'))
+      return
+    }
+    void write.catch((error) => {
       input.onError?.(error)
     })
   }

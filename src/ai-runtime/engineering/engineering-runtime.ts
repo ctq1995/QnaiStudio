@@ -1,6 +1,19 @@
 import { createEngineeringLifecycleRuntime, type EngineeringLifecycleRuntime } from './lifecycle-runtime'
-import { createEngineeringTranscriptRecorder, type EngineeringTranscriptRecorder, type EngineeringTranscriptSnapshot } from './transcript-recorder'
+import { createEngineeringTranscriptRecorder, type EngineeringTranscriptRecordInput, type EngineeringTranscriptRecorder, type EngineeringTranscriptSnapshot } from './transcript-recorder'
 import { EngineeringTurnRunner, type EngineeringTurnInput, type EngineeringTurnResult, type EngineeringTurnRunnerDeps } from './turn-runner'
+
+export type EngineeringRuntimeTranscriptAutoWiringCleanup = () => void
+
+export interface EngineeringRuntimeTranscriptAutoWiringInput {
+  sessionId: string
+  turnId: string
+  taskId: string
+  recorder: EngineeringTranscriptRecorder
+  record: (input: EngineeringTranscriptRecordInput<unknown>) => Promise<void>
+  onError: (error: unknown) => void
+}
+
+export type EngineeringRuntimeTranscriptAutoWiring = (input: EngineeringRuntimeTranscriptAutoWiringInput) => EngineeringRuntimeTranscriptAutoWiringCleanup
 
 export interface EngineeringRuntimeDeps {
   sessionId: string
@@ -9,6 +22,7 @@ export interface EngineeringRuntimeDeps {
   transcriptRecorder?: EngineeringTranscriptRecorder
   pendingTranscriptWrites?: Promise<void>[]
   transcriptRecordErrors?: string[]
+  transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
 }
 
 export interface EngineeringRuntimeFromTurnRunnerDepsInput {
@@ -16,6 +30,7 @@ export interface EngineeringRuntimeFromTurnRunnerDepsInput {
   turnRunnerDeps: EngineeringTurnRunnerDeps
   lifecycleRuntime?: EngineeringLifecycleRuntime
   transcriptRecorder?: EngineeringTranscriptRecorder
+  transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
 }
 
 export interface EngineeringRuntimeTurnResult {
@@ -35,6 +50,7 @@ export class EngineeringRuntime {
   private readonly transcriptRecorder: EngineeringTranscriptRecorder
   private readonly pendingTranscriptWrites: Promise<void>[]
   private readonly transcriptRecordErrors: string[]
+  private readonly transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
 
   private constructor(deps: EngineeringRuntimeDeps) {
     this.sessionId = deps.sessionId
@@ -43,6 +59,7 @@ export class EngineeringRuntime {
     this.turnRunner = deps.turnRunner
     this.pendingTranscriptWrites = deps.pendingTranscriptWrites || []
     this.transcriptRecordErrors = deps.transcriptRecordErrors || []
+    this.transcriptAutoWiring = deps.transcriptAutoWiring
   }
 
   static fromTurnRunnerDeps(input: EngineeringRuntimeFromTurnRunnerDepsInput): EngineeringRuntime {
@@ -70,6 +87,7 @@ export class EngineeringRuntime {
       transcriptRecorder,
       pendingTranscriptWrites,
       transcriptRecordErrors,
+      transcriptAutoWiring: input.transcriptAutoWiring,
     })
   }
 
@@ -80,42 +98,53 @@ export class EngineeringRuntime {
     let turnEnded = false
     let turnStarted = false
     let sessionStarted = false
+    let transcriptWiringCleanup: EngineeringRuntimeTranscriptAutoWiringCleanup | undefined
 
     try {
-      const sessionStart = await this.dispatchAndRecord({ type: 'SessionStart', sessionId })
-      sessionStarted = true
+      transcriptWiringCleanup = this.registerTranscriptAutoWiring(sessionId, turnId, input.taskId || turnId)
 
-      if (sessionStart.blocked) {
-        turn = createBlockedTurnResult(sessionId, turnId, sessionStart.blockReason || 'Session blocked by lifecycle hook')
-      } else {
-        const turnStart = await this.dispatchAndRecord({ type: 'TurnStart', sessionId, turnId })
-        if (turnStart.blocked) {
-          turn = createBlockedTurnResult(sessionId, turnId, turnStart.blockReason || 'Turn blocked by lifecycle hook')
+      try {
+        const sessionStart = await this.dispatchAndRecord({ type: 'SessionStart', sessionId })
+        sessionStarted = true
+
+        if (sessionStart.blocked) {
+          turn = createBlockedTurnResult(sessionId, turnId, sessionStart.blockReason || 'Session blocked by lifecycle hook')
         } else {
-          turnStarted = true
-          const prompt = await this.dispatchAndRecord({ type: 'UserPromptSubmit', sessionId, turnId, taskId: input.taskId || turnId, payload: { userRequest: input.userRequest } })
-          if (prompt.blocked) {
-            turn = createBlockedTurnResult(sessionId, turnId, prompt.blockReason || 'Prompt blocked by lifecycle hook')
+          const turnStart = await this.dispatchAndRecord({ type: 'TurnStart', sessionId, turnId })
+          if (turnStart.blocked) {
+            turn = createBlockedTurnResult(sessionId, turnId, turnStart.blockReason || 'Turn blocked by lifecycle hook')
           } else {
-            turn = await this.turnRunner.run({ ...input, sessionId, turnId, taskId: input.taskId || turnId })
+            turnStarted = true
+            const prompt = await this.dispatchAndRecord({ type: 'UserPromptSubmit', sessionId, turnId, taskId: input.taskId || turnId, payload: { userRequest: input.userRequest } })
+            if (prompt.blocked) {
+              turn = createBlockedTurnResult(sessionId, turnId, prompt.blockReason || 'Prompt blocked by lifecycle hook')
+            } else {
+              turn = await this.turnRunner.run({ ...input, sessionId, turnId, taskId: input.taskId || turnId })
+            }
           }
         }
+      } catch (error) {
+        turn = createBlockedTurnResult(sessionId, turnId, stringifyError(error))
       }
-    } catch (error) {
-      turn = createBlockedTurnResult(sessionId, turnId, stringifyError(error))
+
+      if (!turn) {
+        turn = createBlockedTurnResult(sessionId, turnId, 'Turn did not produce a result')
+      }
+
+      if (turnStarted && !turnEnded) {
+        await this.dispatchAndRecord({ type: 'TurnEnd', sessionId, turnId, payload: { success: turn.status === 'idle', error: turn.error } })
+        turnEnded = true
+      }
+
+      if (sessionStarted) {
+        await this.dispatchAndRecord({ type: 'SessionEnd', sessionId })
+      }
+    } finally {
+      transcriptWiringCleanup?.()
     }
 
     if (!turn) {
       turn = createBlockedTurnResult(sessionId, turnId, 'Turn did not produce a result')
-    }
-
-    if (turnStarted && !turnEnded) {
-      await this.dispatchAndRecord({ type: 'TurnEnd', sessionId, turnId, payload: { success: turn.status === 'idle', error: turn.error } })
-      turnEnded = true
-    }
-
-    if (sessionStarted) {
-      await this.dispatchAndRecord({ type: 'SessionEnd', sessionId })
     }
 
     return { turn, transcript: await this.createTranscriptSnapshot() }
@@ -130,6 +159,29 @@ export class EngineeringRuntime {
       sessionId: this.sessionId,
       lifecycle: this.lifecycleRuntime.snapshot(),
     }
+  }
+
+  private registerTranscriptAutoWiring(sessionId: string, turnId: string, taskId: string): EngineeringRuntimeTranscriptAutoWiringCleanup | undefined {
+    if (!this.transcriptAutoWiring) return undefined
+    return this.transcriptAutoWiring({
+      sessionId,
+      turnId,
+      taskId,
+      recorder: this.transcriptRecorder,
+      record: (input) => this.recordTrackedTranscriptInput(input),
+      onError: (error) => {
+        this.transcriptRecordErrors.push(stringifyError(error))
+      },
+    })
+  }
+
+  private async recordTrackedTranscriptInput(input: EngineeringTranscriptRecordInput<unknown>): Promise<void> {
+    const write = this.transcriptRecorder.record(input).then(() => undefined)
+    const tracked = write.catch((error) => {
+      this.transcriptRecordErrors.push(stringifyError(error))
+    })
+    this.pendingTranscriptWrites.push(tracked)
+    await tracked
   }
 
   private async dispatchAndRecord(input: Parameters<EngineeringLifecycleRuntime['dispatch']>[0]) {

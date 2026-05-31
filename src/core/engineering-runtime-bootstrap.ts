@@ -1,3 +1,4 @@
+import { registerAIEventTranscriptAutoWiring } from '../services/aiEventTranscriptAutoWiring'
 import {
   createEngineeringTaskRunner,
   getTaskManager,
@@ -11,6 +12,8 @@ import {
   type EngineeringTaskRunner,
   type EngineeringTaskRunnerAdapterInput,
   type EngineeringTranscriptRecorder,
+  type EngineeringRuntimeTranscriptAutoWiring,
+  type EngineeringRuntimeTranscriptAutoWiringInput,
   type TaskManager,
 } from '../ai-runtime'
 
@@ -43,6 +46,7 @@ export interface EngineeringPipelineRunnerRegistrationInput extends EngineeringP
   sessionId?: EngineeringTaskRunnerAdapterInput['sessionId']
   lifecycleRuntime?: EngineeringLifecycleRuntime
   transcriptRecorder?: EngineeringTranscriptRecorder
+  transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   mapTaskToRunInput?: EngineeringTaskInputMapper
 }
 
@@ -69,6 +73,7 @@ export function registerEngineeringPipelineRunner(input: EngineeringPipelineRunn
       sessionId: input.sessionId,
       lifecycleRuntime: input.lifecycleRuntime,
       transcriptRecorder: input.transcriptRecorder,
+      transcriptAutoWiring: input.transcriptAutoWiring || registerDefaultAIEventTranscriptAutoWiring,
       mapTaskToRunInput: input.mapTaskToRunInput,
       pipelineDeps,
     },
@@ -84,6 +89,18 @@ export function registerEngineeringRunner(input: EngineeringRunnerBootstrapInput
     registered: true,
     source: input.runner ? 'runner' : 'adapter',
   }
+}
+
+function registerDefaultAIEventTranscriptAutoWiring(input: EngineeringRuntimeTranscriptAutoWiringInput): ReturnType<EngineeringRuntimeTranscriptAutoWiring> {
+  return registerAIEventTranscriptAutoWiring({
+    ...input,
+    mapPayload: (event) => ({
+      type: event.type,
+      sessionId: event.sessionId,
+      turnId: event.turnId,
+      taskId: event.taskId,
+    }),
+  })
 }
 
 function createRunnerFromAdapter(adapter: EngineeringTaskRunnerAdapterInput | undefined): EngineeringTaskRunner {

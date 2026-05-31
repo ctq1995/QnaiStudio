@@ -280,6 +280,24 @@ export class EventBus {
   }
 
   /**
+   * 订阅某个 session 的全部 AIEvent
+   */
+  onSession(sessionId: string, listener: EventListener, options?: ListenerOptions): () => void {
+    let cleanup: (() => void) | undefined
+    cleanup = this.onAny((event) => {
+      if (event.sessionId !== sessionId) return
+      listener(event)
+      if (options?.once) {
+        cleanup?.()
+      }
+    }, {
+      ...options,
+      once: false,
+    })
+    return cleanup
+  }
+
+  /**
    * 订阅事件（只监听一次）
    */
   once(
@@ -340,6 +358,13 @@ export class EventBus {
       return this.history.filter(filter)
     }
     return [...this.history]
+  }
+
+  /**
+   * 获取某个 session 的历史记录
+   */
+  getSessionHistory(sessionId: string): AIEvent[] {
+    return this.getHistory((event) => event.sessionId === sessionId)
   }
 
   /**

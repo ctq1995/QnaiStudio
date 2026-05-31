@@ -20,13 +20,16 @@ export function createWaitableBuiltInAgentRunner(input: WaitableBuiltInAgentRunn
     try {
       const runtime = input.aiRuntime || createRuntimeFromConfig(input.aiRuntimeConfig, request.workspaceDir)
       const sessionId = await runtime.sendMessage(buildAgentPrompt(request))
+      const seenEvents = new Set<AIEvent>()
       const collectSessionOutput = (event: AIEvent) => {
+        if (seenEvents.has(event)) return
+        seenEvents.add(event)
         if (event.sessionId !== sessionId) return
         const output = input.collectOutput ? input.collectOutput(event) : collectDefaultOutput(event)
         if (output) outputs.push(output)
       }
-      eventBus.getHistory().forEach(collectSessionOutput)
-      cleanupOutput = eventBus.onAny(collectSessionOutput)
+      cleanupOutput = eventBus.onSession(sessionId, collectSessionOutput)
+      eventBus.getSessionHistory(sessionId).forEach(collectSessionOutput)
       const result = await waitForSessionEnd(eventBus, sessionId, input.timeoutMs)
 
       if (result.error) {

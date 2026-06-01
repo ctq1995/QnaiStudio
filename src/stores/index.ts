@@ -17,4 +17,4 @@ export { useViewStore } from './viewStore';
 export { useFloatingWindowStore } from './floatingWindowStore';
 export { useVersioningStore } from './versioningStore';
 export { useErrorCenterStore, type AppErrorItem, type AppErrorLevel, type AppErrorScope } from './errorCenterStore';
-export { useEngineeringTaskStateStore, engineeringTaskStateService, type EngineeringTaskStateFilter } from './engineeringTaskStateStore';
+export { useEngineeringTaskStateStore, engineeringTaskStateService, type EngineeringTaskCenterAction, type EngineeringTaskCenterActionRequest, type EngineeringTaskStateFilter } from './engineeringTaskStateStore';

@@ -39,6 +39,20 @@ describe('engineeringTaskStateStore', () => {
     }));
   });
 
+  it('records and clears task action requests', () => {
+    useEngineeringTaskStateStore.getState().requestTaskAction('task-1', 'open_timeline');
+
+    expect(useEngineeringTaskStateStore.getState().lastActionRequest).toEqual(expect.objectContaining({
+      taskId: 'task-1',
+      action: 'open_timeline',
+    }));
+    expect(useEngineeringTaskStateStore.getState().lastActionRequest?.requestedAt).toEqual(expect.any(String));
+
+    useEngineeringTaskStateStore.getState().clear();
+
+    expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
+  });
+
   it('clears store state and handles missing snapshot taskStates', () => {
     useEngineeringTaskStateStore.getState().setTaskStates([createTaskState({ taskId: 'task-1' })]);
     useEngineeringTaskStateStore.getState().selectTask('task-1');

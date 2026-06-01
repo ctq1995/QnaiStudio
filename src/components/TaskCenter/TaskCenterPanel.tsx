@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { clsx } from 'clsx';
 import type { EngineeringTaskState } from '../../ai-runtime/engineering';
-import { useEngineeringTaskStateStore, type EngineeringTaskStateFilter } from '../../stores';
+import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskStateFilter } from '../../stores';
 
 interface TaskCenterPanelProps {
   className?: string;
@@ -40,6 +40,7 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
   const selectTask = useEngineeringTaskStateStore((state) => state.selectTask);
   const getFilteredTaskStates = useEngineeringTaskStateStore((state) => state.getFilteredTaskStates);
   const getActiveTask = useEngineeringTaskStateStore((state) => state.getActiveTask);
+  const requestTaskAction = useEngineeringTaskStateStore((state) => state.requestTaskAction);
 
   const filteredTasks = getFilteredTaskStates();
   const activeTask = getActiveTask() || filteredTasks[0];
@@ -131,7 +132,11 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
           </div>
 
           <div className="min-w-0 flex-1 overflow-y-auto p-3">
-            {activeTask ? <TaskDetail task={activeTask} /> : <div className="text-sm text-text-tertiary">请选择任务</div>}
+            {activeTask ? (
+              <TaskDetail task={activeTask} onAction={requestTaskAction} />
+            ) : (
+              <div className="text-sm text-text-tertiary">请选择任务</div>
+            )}
           </div>
         </div>
       )}
@@ -139,7 +144,13 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
   );
 }
 
-function TaskDetail({ task }: { task: EngineeringTaskState }) {
+function TaskDetail({
+  task,
+  onAction,
+}: {
+  task: EngineeringTaskState;
+  onAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
+}) {
   return (
     <div className="space-y-3 text-xs">
       <div>
@@ -157,6 +168,8 @@ function TaskDetail({ task }: { task: EngineeringTaskState }) {
           ['turn', task.turnId],
         ]}
       />
+
+      <TaskActions task={task} onAction={onAction} />
 
       <Section title="Skipped stages">
         {task.skippedStages.length > 0 ? (
@@ -189,6 +202,57 @@ function TaskDetail({ task }: { task: EngineeringTaskState }) {
       </Section>
     </div>
   );
+}
+
+function TaskActions({
+  task,
+  onAction,
+}: {
+  task: EngineeringTaskState;
+  onAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
+}) {
+  const actions: Array<{ action: EngineeringTaskCenterAction; label: string; enabled: boolean }> = [
+    { action: 'pause', label: 'Pause', enabled: canPause(task.status) },
+    { action: 'resume', label: 'Resume', enabled: canResume(task.status) },
+    { action: 'cancel', label: 'Cancel', enabled: canCancel(task.status) },
+    { action: 'open_transcript', label: 'Transcript', enabled: true },
+    { action: 'open_timeline', label: 'Timeline', enabled: true },
+  ];
+
+  return (
+    <Section title="Actions">
+      <div className="grid grid-cols-2 gap-1.5">
+        {actions.map(({ action, label, enabled }) => (
+          <button
+            key={action}
+            type="button"
+            disabled={!enabled}
+            onClick={() => enabled && onAction(task.taskId, action)}
+            className={clsx(
+              'rounded-md border px-2 py-1 text-[11px] transition-colors',
+              enabled
+                ? 'border-border bg-background-surface text-text-primary hover:bg-background-hover'
+                : 'cursor-not-allowed border-border-subtle bg-background-base text-text-tertiary opacity-60',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function canPause(status: EngineeringTaskState['status']): boolean {
+  return ['running', 'routed', 'context_building', 'executing', 'diffing', 'verifying', 'reviewing'].includes(status);
+}
+
+function canResume(status: EngineeringTaskState['status']): boolean {
+  return status === 'canceled' || status === 'aborted';
+}
+
+function canCancel(status: EngineeringTaskState['status']): boolean {
+  return ['queued', 'running', 'routed', 'context_building', 'executing', 'diffing', 'verifying', 'reviewing'].includes(status);
 }
 
 function DetailGrid({ rows }: { rows: Array<[string, string | undefined]> }) {

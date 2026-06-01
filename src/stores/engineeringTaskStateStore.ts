@@ -4,13 +4,23 @@ import { engineeringTaskStateService, filterTaskStates, type EngineeringTaskStat
 
 type EngineeringTaskStateSnapshot = { taskStates?: EngineeringTaskState[] };
 
+export type EngineeringTaskCenterAction = 'pause' | 'resume' | 'cancel' | 'open_transcript' | 'open_timeline';
+
+export interface EngineeringTaskCenterActionRequest {
+  taskId: string;
+  action: EngineeringTaskCenterAction;
+  requestedAt: string;
+}
+
 interface EngineeringTaskStateStore {
   taskStates: EngineeringTaskState[];
   activeTaskId?: string;
   filter: EngineeringTaskStateFilter;
+  lastActionRequest?: EngineeringTaskCenterActionRequest;
   setTaskStates: (states: EngineeringTaskState[]) => void;
   upsertTaskState: (state: EngineeringTaskState) => void;
   syncFromRuntimeSnapshot: (snapshot: EngineeringTaskStateSnapshot) => void;
+  requestTaskAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
   setFilter: (filter: EngineeringTaskStateFilter) => void;
   selectTask: (taskId: string) => void;
   clear: () => void;
@@ -38,6 +48,16 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
     set({ taskStates: engineeringTaskStateService.getTaskStates() });
   },
 
+  requestTaskAction: (taskId, action) => {
+    set({
+      lastActionRequest: {
+        taskId,
+        action,
+        requestedAt: new Date().toISOString(),
+      },
+    });
+  },
+
   setFilter: (filter) => {
     set({ filter });
   },
@@ -48,7 +68,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {} });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),

@@ -48,16 +48,16 @@ export class EngineeringExecutionPipeline {
     const taskId = input.taskId || this.deps.createTaskId?.() || createDefaultTaskId()
     const auditRecorder = this.deps.auditRecorder || new InMemoryEngineeringAuditRecorder()
     const permissionMode = options.routeDecision?.permissionMode || input.permissionMode || 'default'
-    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'classify' })
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'classify' })
     const classification = options.routeDecision?.classification || classifyEngineeringTask(input.userRequest)
-    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'classify' })
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'classify' })
 
-    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'context' })
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'context' })
     const contextRuntime = this.deps.contextRuntime || createEngineeringContextRuntime(this.deps.contextBuilder)
     const contextPrepareResult = await contextRuntime.prepare(input)
     const context = contextPrepareResult.context
-    emitEngineeringEvent(this.deps.onEvent, { type: 'context_built', taskId, candidateFileCount: context.candidateFiles.length })
-    emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'context_built', taskId, candidateFileCount: context.candidateFiles.length })
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
 
     const runModeDecision = options.routeDecision?.runModeDecision || resolveEngineeringRunMode({ requestedMode: input.runMode, classification })
     emitRouteSkippedStages(this.deps.onEvent, taskId, options.routeDecision)
@@ -81,17 +81,17 @@ export class EngineeringExecutionPipeline {
     let snapshot: SnapshotResult = { created: false }
 
     if (requiresCapability(options.routeDecision, 'snapshot') && shouldCreateSnapshot(classification)) {
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'snapshot' })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'snapshot' })
       const label = createSnapshotLabel(classification.kind)
       try {
         const version = await this.deps.createSnapshot(label, input)
         snapshot = { created: true, label, versionId: version.versionId }
-        emitEngineeringEvent(this.deps.onEvent, { type: 'snapshot_created', taskId, versionId: version.versionId, label })
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'snapshot' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'snapshot_created', taskId, versionId: version.versionId, label })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'snapshot' })
       } catch (error) {
         const message = stringifyError(error)
         snapshot = { created: false, label, error: message }
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'snapshot', error: message })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_failed', taskId, stage: 'snapshot', error: message })
       }
     }
 
@@ -106,7 +106,7 @@ export class EngineeringExecutionPipeline {
 
     let agentResult: EngineeringAgentResult = { success: true, content: 'Agent execution skipped by route decision.' }
     if (shouldExecuteAgent) {
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'execute' })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'execute' })
       try {
         agentResult = await this.deps.executeAgentTask(agentRequest)
       } catch (error) {
@@ -114,7 +114,7 @@ export class EngineeringExecutionPipeline {
       }
 
       if (!agentResult.success) {
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'execute', error: agentResult.error || 'Agent execution failed' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_failed', taskId, stage: 'execute', error: agentResult.error || 'Agent execution failed' })
         return finalize({
           taskId,
           classification,
@@ -129,19 +129,19 @@ export class EngineeringExecutionPipeline {
           failedStage: 'execute',
         })
       }
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'execute' })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'execute' })
     }
 
     let diff = ''
     let diffError: string | undefined
     if (requiresCapability(options.routeDecision, 'git_diff')) {
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'diff' })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'diff' })
       try {
         diff = await this.deps.getGitDiff(input.workspaceDir)
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'diff' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'diff' })
       } catch (error) {
         diffError = stringifyError(error)
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'diff', error: diffError })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_failed', taskId, stage: 'diff', error: diffError })
       }
     }
 
@@ -191,22 +191,22 @@ export class EngineeringExecutionPipeline {
 
     try {
       if (commands.length > 0) {
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'verify' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'verify' })
         for (const command of commands) {
-          emitEngineeringEvent(this.deps.onEvent, { type: 'verification_started', taskId, command })
+          emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'verification_started', taskId, command })
         }
         const startedAt = new Date()
         const executedResults = await this.deps.runVerification(commands, input.workspaceDir)
         verificationResults = [...verificationResults, ...executedResults]
         for (const result of executedResults) {
           auditRecorder.recordTool(createToolAuditRecord(taskId, result.command.id, result.command.label, result.success ? 'success' : 'error', startedAt, undefined, result.error))
-          emitEngineeringEvent(this.deps.onEvent, { type: 'verification_completed', taskId, command: result.command, success: result.success })
+          emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'verification_completed', taskId, command: result.command, success: result.success })
         }
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'verify' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'verify' })
       }
     } catch (error) {
       const message = stringifyError(error)
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'verify', error: message })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_failed', taskId, stage: 'verify', error: message })
       const startedAt = new Date()
       verificationResults = [...verificationResults, ...commands.map((command) => {
         auditRecorder.recordTool(createToolAuditRecord(taskId, command.id, command.label, 'error', startedAt, undefined, message))
@@ -234,19 +234,19 @@ export class EngineeringExecutionPipeline {
     }
 
     if (!diffError && shouldRunReviewStage && shouldRunReview(diff)) {
-      emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'review' })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_started', taskId, stage: 'review' })
       try {
         review = await this.deps.runReview(buildEngineeringReviewPromptForSubtype(options.routeDecision?.subtype, diff), diff, input.workspaceDir)
-        emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: review.success, skipped: review.skipped })
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'review' })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'review_completed', taskId, success: review.success, skipped: review.skipped })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_completed', taskId, stage: 'review' })
       } catch (error) {
         const message = stringifyError(error)
         review = { success: false, error: message }
-        emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'review', error: message })
+        emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'stage_failed', taskId, stage: 'review', error: message })
       }
     } else if (requiresCapability(options.routeDecision, 'review')) {
       const skippedReason = diffError ? 'diff_error' : 'empty_diff'
-      emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: false, skipped: true, skippedReason })
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, { type: 'review_completed', taskId, success: false, skipped: true, skippedReason })
     }
 
     return finalize({

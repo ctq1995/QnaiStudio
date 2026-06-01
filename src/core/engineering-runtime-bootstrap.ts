@@ -11,6 +11,7 @@ import {
   type EngineeringTaskInputMapper,
   type EngineeringTaskRunner,
   type EngineeringTaskRunnerAdapterInput,
+  type EngineeringTaskStateTracker,
   type EngineeringTranscriptRecorder,
   type EngineeringRuntimeTranscriptAutoWiring,
   type EngineeringRuntimeTranscriptAutoWiringInput,
@@ -47,6 +48,7 @@ export interface EngineeringPipelineRunnerRegistrationInput extends EngineeringP
   lifecycleRuntime?: EngineeringLifecycleRuntime
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
+  taskStateTracker?: EngineeringTaskStateTracker
   mapTaskToRunInput?: EngineeringTaskInputMapper
 }
 
@@ -74,6 +76,7 @@ export function registerEngineeringPipelineRunner(input: EngineeringPipelineRunn
       lifecycleRuntime: input.lifecycleRuntime,
       transcriptRecorder: input.transcriptRecorder,
       transcriptAutoWiring: input.transcriptAutoWiring || registerDefaultAIEventTranscriptAutoWiring,
+      taskStateTracker: input.taskStateTracker,
       mapTaskToRunInput: input.mapTaskToRunInput,
       pipelineDeps,
     },

@@ -1,5 +1,6 @@
 import { createEngineeringLifecycleRuntime, type EngineeringLifecycleRuntime } from './lifecycle-runtime'
 import { createEngineeringTranscriptRecorder, type EngineeringTranscriptRecordInput, type EngineeringTranscriptRecorder, type EngineeringTranscriptSnapshot } from './transcript-recorder'
+import { EngineeringTaskStateTracker, type EngineeringTaskState } from './task-state-tracker'
 import { EngineeringTurnRunner, type EngineeringTurnInput, type EngineeringTurnResult, type EngineeringTurnRunnerDeps } from './turn-runner'
 
 export type EngineeringRuntimeTranscriptAutoWiringCleanup = () => void
@@ -23,6 +24,7 @@ export interface EngineeringRuntimeDeps {
   pendingTranscriptWrites?: Promise<void>[]
   transcriptRecordErrors?: string[]
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
+  taskStateTracker?: EngineeringTaskStateTracker
 }
 
 export interface EngineeringRuntimeFromTurnRunnerDepsInput {
@@ -31,6 +33,7 @@ export interface EngineeringRuntimeFromTurnRunnerDepsInput {
   lifecycleRuntime?: EngineeringLifecycleRuntime
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
+  taskStateTracker?: EngineeringTaskStateTracker
 }
 
 export interface EngineeringRuntimeTurnResult {
@@ -41,6 +44,7 @@ export interface EngineeringRuntimeTurnResult {
 export interface EngineeringRuntimeSnapshot {
   sessionId: string
   lifecycle: ReturnType<EngineeringLifecycleRuntime['snapshot']>
+  taskStates: EngineeringTaskState[]
 }
 
 export class EngineeringRuntime {
@@ -51,6 +55,7 @@ export class EngineeringRuntime {
   private readonly pendingTranscriptWrites: Promise<void>[]
   private readonly transcriptRecordErrors: string[]
   private readonly transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
+  private readonly taskStateTracker: EngineeringTaskStateTracker
 
   private constructor(deps: EngineeringRuntimeDeps) {
     this.sessionId = deps.sessionId
@@ -60,12 +65,14 @@ export class EngineeringRuntime {
     this.pendingTranscriptWrites = deps.pendingTranscriptWrites || []
     this.transcriptRecordErrors = deps.transcriptRecordErrors || []
     this.transcriptAutoWiring = deps.transcriptAutoWiring
+    this.taskStateTracker = deps.taskStateTracker || new EngineeringTaskStateTracker()
   }
 
   static fromTurnRunnerDeps(input: EngineeringRuntimeFromTurnRunnerDepsInput): EngineeringRuntime {
     const transcriptRecorder = input.transcriptRecorder || createEngineeringTranscriptRecorder()
     const pendingTranscriptWrites: Promise<void>[] = []
     const transcriptRecordErrors: string[] = []
+    const taskStateTracker = input.taskStateTracker || new EngineeringTaskStateTracker()
     const enqueueTranscriptWrite = (write: Promise<void>) => {
       const tracked = write.catch((error) => {
         transcriptRecordErrors.push(stringifyError(error))
@@ -75,8 +82,13 @@ export class EngineeringRuntime {
     const turnRunner = new EngineeringTurnRunner({
       ...input.turnRunnerDeps,
       onTurnEvent: (event) => {
+        safeRecordTaskState(() => taskStateTracker.recordTurnEvent(event))
         enqueueTranscriptWrite(transcriptRecorder.recordTurnEvent(event).then(() => undefined))
         input.turnRunnerDeps.onTurnEvent?.(event)
+      },
+      onRunEvent: (event) => {
+        safeRecordTaskState(() => taskStateTracker.recordRunEvent(event))
+        input.turnRunnerDeps.onRunEvent?.(event)
       },
     })
 
@@ -88,6 +100,7 @@ export class EngineeringRuntime {
       pendingTranscriptWrites,
       transcriptRecordErrors,
       transcriptAutoWiring: input.transcriptAutoWiring,
+      taskStateTracker,
     })
   }
 
@@ -158,6 +171,7 @@ export class EngineeringRuntime {
     return {
       sessionId: this.sessionId,
       lifecycle: this.lifecycleRuntime.snapshot(),
+      taskStates: this.taskStateTracker.getAllTaskStates(),
     }
   }
 
@@ -226,6 +240,14 @@ function createBlockedTurnResult(sessionId: string, turnId: string, error: strin
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function safeRecordTaskState(record: () => unknown): void {
+  try {
+    record()
+  } catch {
+    // Task state tracking is observational; it must not break runtime execution.
+  }
 }
 
 function createRuntimeTurnId(): string {

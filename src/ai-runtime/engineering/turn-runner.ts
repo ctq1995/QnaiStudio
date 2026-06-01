@@ -1,7 +1,7 @@
 import { routeEngineeringAgentTask, type EngineeringAgentRouteDecision } from './agent-router'
 import { EngineeringExecutionPipeline } from './execution-pipeline'
 import type { EngineeringExecutionPipelineDeps } from './execution-pipeline'
-import type { EngineeringRunEvent, EngineeringRunInput, EngineeringRunSummary, EngineeringStage } from './types'
+import type { EngineeringRunEvent, EngineeringRunEventHandler, EngineeringRunInput, EngineeringRunSummary, EngineeringStage } from './types'
 
 export type EngineeringAgentSessionStatus = 'idle' | 'running' | 'failed' | 'aborted'
 
@@ -33,6 +33,7 @@ export type EngineeringTurnEventHandler = (event: EngineeringTurnEvent) => void
 export interface EngineeringTurnRunnerDeps {
   pipeline: EngineeringExecutionPipeline
   onTurnEvent?: EngineeringTurnEventHandler
+  onRunEvent?: EngineeringRunEventHandler
   createTurnId?: () => string
 }
 
@@ -91,6 +92,8 @@ export class EngineeringTurnRunner {
   }
 
   private forwardRunEvent(sessionId: string, turnId: string, event: EngineeringRunEvent): void {
+    this.deps.onRunEvent?.(event)
+
     if (event.type === 'verification_strategy_selected') {
       this.emit({
         type: 'verification_strategy_selected',

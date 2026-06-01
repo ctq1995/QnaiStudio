@@ -5,6 +5,7 @@ import type { EngineeringExecutionPipelineDeps } from './execution-pipeline'
 import type { EngineeringLifecycleRuntime } from './lifecycle-runtime'
 import type { EngineeringPermissionMode } from './permission-policy'
 import type { EngineeringRunMode } from './run-mode-policy'
+import type { EngineeringTaskStateTracker } from './task-state-tracker'
 import type { EngineeringTranscriptRecorder } from './transcript-recorder'
 import { createEngineeringTurnRunnerDepsFromPipelineDeps, type EngineeringTurnInput, type EngineeringTurnRunnerDeps } from './turn-runner'
 
@@ -15,6 +16,7 @@ export interface EngineeringTaskRunnerAdapterInput {
   lifecycleRuntime?: EngineeringLifecycleRuntime
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
+  taskStateTracker?: EngineeringTaskStateTracker
   pipelineDeps?: EngineeringExecutionPipelineDeps
   turnRunnerDeps?: EngineeringTurnRunnerDeps
   mapTaskToRunInput?: EngineeringTaskInputMapper
@@ -41,6 +43,7 @@ export function createEngineeringTaskRunner(input: EngineeringTaskRunnerAdapterI
         lifecycleRuntime: input.lifecycleRuntime,
         transcriptRecorder: input.transcriptRecorder,
         transcriptAutoWiring: input.transcriptAutoWiring,
+        taskStateTracker: input.taskStateTracker,
       })
       const result = await runtime.runTurn({
         ...mapTaskToRunInput(task),

@@ -7,6 +7,7 @@ export type EngineeringTranscriptTimelineItemKind =
   | 'permission'
   | 'verification'
   | 'review'
+  | 'route'
   | 'policy'
   | 'note'
   | 'event'
@@ -97,6 +98,7 @@ function mapTimelineKind(type: EngineeringTranscriptEventType): EngineeringTrans
   if (type === 'permission_decision') return 'permission'
   if (type === 'verification_result') return 'verification'
   if (type === 'review_result') return 'review'
+  if (type === 'route_decision') return 'route'
   if (type === 'note') return 'note'
   return 'event'
 }
@@ -117,6 +119,8 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
       return 'Tool call'
     case 'tool_result':
       return 'Tool result'
+    case 'route_decision':
+      return 'Route decided'
     case 'permission_decision':
       return 'Permission decision'
     case 'verification_result':
@@ -131,8 +135,23 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
 }
 
 function createTimelineSummary(event: EngineeringTranscriptEvent): string | undefined {
+  if (event.type === 'route_decision') {
+    const payload = event.payload
+    if (isRouteDecisionPayload(payload)) {
+      return `route=${payload.route} risk=${payload.riskLevel} permission=${payload.permissionMode} skipped=${payload.skippedStages.join(',') || 'none'}`
+    }
+  }
   const parts = [event.sessionId && `session=${event.sessionId}`, event.turnId && `turn=${event.turnId}`, event.taskId && `task=${event.taskId}`].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : undefined
+}
+
+function isRouteDecisionPayload(payload: unknown): payload is { route: string; riskLevel: string; permissionMode: string; skippedStages: string[] } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { route?: unknown; riskLevel?: unknown; permissionMode?: unknown; skippedStages?: unknown }
+  return typeof candidate.route === 'string'
+    && typeof candidate.riskLevel === 'string'
+    && typeof candidate.permissionMode === 'string'
+    && Array.isArray(candidate.skippedStages)
 }
 
 function extractPolicyActions(payload: unknown): EngineeringTranscriptTimelinePolicyAction[] {

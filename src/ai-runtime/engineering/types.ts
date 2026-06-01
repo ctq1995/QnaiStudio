@@ -1,3 +1,4 @@
+import type { EngineeringAgentRouteDecision } from './agent-router'
 import type { EngineeringAuditSummary } from './audit-recorder'
 import type { EngineeringContextProviderResult } from './context-provider'
 import type { EngineeringDiagnostic } from './diagnostics-provider'
@@ -40,6 +41,7 @@ export interface EngineeringRunInput {
   gitDiff?: EngineeringGitDiffContext
   runMode?: EngineeringRunMode
   permissionMode?: EngineeringPermissionMode
+  routeDecision?: EngineeringAgentRouteDecision
 }
 
 export interface EngineeringProjectSignals {

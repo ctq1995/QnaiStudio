@@ -13,6 +13,7 @@ export type EngineeringTranscriptEventType =
   | 'permission_decision'
   | 'verification_result'
   | 'review_result'
+  | 'route_decision'
   | 'note'
 
 export interface EngineeringTranscriptEvent<TPayload = unknown> {
@@ -154,6 +155,7 @@ function mapLifecycleEventType(event: EngineeringLifecycleEvent): EngineeringTra
 
 function mapTurnEventType(event: EngineeringTurnEvent): EngineeringTranscriptEventType {
   if (event.type === 'turn_started') return 'turn_started'
+  if (event.type === 'route_decided') return 'route_decision'
   if (event.type === 'turn_completed') return 'turn_completed'
   return 'turn_failed'
 }

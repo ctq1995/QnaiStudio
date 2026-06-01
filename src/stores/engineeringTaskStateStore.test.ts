@@ -53,6 +53,26 @@ describe('engineeringTaskStateStore', () => {
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
   });
 
+  it('dispatches task actions and records dispatch results', () => {
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
+
+    expect(useEngineeringTaskStateStore.getState().lastActionRequest).toEqual(expect.objectContaining({
+      taskId: 'task-1',
+      action: 'cancel',
+    }));
+    expect(useEngineeringTaskStateStore.getState().lastActionResult).toEqual(expect.objectContaining({
+      taskId: 'task-1',
+      action: 'cancel',
+      status: 'accepted',
+      reason: 'noop_control_handler',
+    }));
+
+    useEngineeringTaskStateStore.getState().clear();
+
+    expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
+    expect(useEngineeringTaskStateStore.getState().lastActionResult).toBeUndefined();
+  });
+
   it('clears store state and handles missing snapshot taskStates', () => {
     useEngineeringTaskStateStore.getState().setTaskStates([createTaskState({ taskId: 'task-1' })]);
     useEngineeringTaskStateStore.getState().selectTask('task-1');

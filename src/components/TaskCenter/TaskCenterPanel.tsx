@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { clsx } from 'clsx';
 import type { EngineeringTaskState } from '../../ai-runtime/engineering';
-import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskStateFilter } from '../../stores';
+import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskControlDispatchResult, type EngineeringTaskStateFilter } from '../../stores';
 
 interface TaskCenterPanelProps {
   className?: string;
@@ -40,7 +40,8 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
   const selectTask = useEngineeringTaskStateStore((state) => state.selectTask);
   const getFilteredTaskStates = useEngineeringTaskStateStore((state) => state.getFilteredTaskStates);
   const getActiveTask = useEngineeringTaskStateStore((state) => state.getActiveTask);
-  const requestTaskAction = useEngineeringTaskStateStore((state) => state.requestTaskAction);
+  const dispatchTaskAction = useEngineeringTaskStateStore((state) => state.dispatchTaskAction);
+  const lastActionResult = useEngineeringTaskStateStore((state) => state.lastActionResult);
 
   const filteredTasks = getFilteredTaskStates();
   const activeTask = getActiveTask() || filteredTasks[0];
@@ -133,7 +134,11 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
 
           <div className="min-w-0 flex-1 overflow-y-auto p-3">
             {activeTask ? (
-              <TaskDetail task={activeTask} onAction={requestTaskAction} />
+              <TaskDetail
+                task={activeTask}
+                actionResult={lastActionResult?.taskId === activeTask.taskId ? lastActionResult : undefined}
+                onAction={dispatchTaskAction}
+              />
             ) : (
               <div className="text-sm text-text-tertiary">请选择任务</div>
             )}
@@ -146,9 +151,11 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
 
 function TaskDetail({
   task,
+  actionResult,
   onAction,
 }: {
   task: EngineeringTaskState;
+  actionResult?: EngineeringTaskControlDispatchResult;
   onAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
 }) {
   return (
@@ -170,6 +177,17 @@ function TaskDetail({
       />
 
       <TaskActions task={task} onAction={onAction} />
+
+      {actionResult && (
+        <Section title="Last action result">
+          <DetailGrid rows={[
+            ['action', actionResult.action],
+            ['status', actionResult.status],
+            ['reason', actionResult.reason],
+            ['handled', actionResult.handledAt],
+          ]} />
+        </Section>
+      )}
 
       <Section title="Skipped stages">
         {task.skippedStages.length > 0 ? (

@@ -42,6 +42,23 @@ describe('EngineeringExecutionPipeline router decisions', () => {
       subtype: 'review.security',
       focus: 'security',
     }))
+    expect(calls.strategyEvents.some((event) => event.type === 'verification_strategy_selected')).toBe(false)
+  })
+
+  it('records review skipped reason when review route has no diff', async () => {
+    const calls = createCallTracker()
+    const pipeline = createPipeline(calls, '')
+    const input = createInput('review the current diff')
+    const routeDecision = routeEngineeringAgentTask(input)
+
+    const summary = await pipeline.run(input, { routeDecision })
+
+    expect(summary.review.skipped).toBe(true)
+    expect(calls.events).toContainEqual(expect.objectContaining({
+      type: 'review_completed',
+      skipped: true,
+      skippedReason: 'empty_diff',
+    }))
   })
 
   it('runs diff and verification for verify routes without executing the agent', async () => {
@@ -91,9 +108,10 @@ function createInput(userRequest: string): EngineeringRunInput {
   }
 }
 
-function createPipeline(calls: ReturnType<typeof createCallTracker>): EngineeringExecutionPipeline {
+function createPipeline(calls: ReturnType<typeof createCallTracker>, diff = frontendDiff): EngineeringExecutionPipeline {
   const deps: EngineeringExecutionPipelineDeps = {
     onEvent: (event) => {
+      calls.events.push(event)
       if (event.type === 'stage_skipped') {
         calls.skippedStages.push(event.stage)
       }
@@ -111,7 +129,7 @@ function createPipeline(calls: ReturnType<typeof createCallTracker>): Engineerin
     },
     getGitDiff: async () => {
       calls.diff += 1
-      return frontendDiff
+      return diff
     },
     runVerification: async (commands) => {
       calls.verify += 1
@@ -184,5 +202,6 @@ function createCallTracker() {
     reviewPrompts: [] as string[],
     skippedStages: [] as string[],
     strategyEvents: [] as EngineeringRunEvent[],
+    events: [] as EngineeringRunEvent[],
   }
 }

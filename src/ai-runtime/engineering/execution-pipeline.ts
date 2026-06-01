@@ -150,14 +150,16 @@ export class EngineeringExecutionPipeline {
     const selectedCommands = shouldRunVerification && (classification.requiresVerification || Boolean(options.routeDecision))
       ? selectVerificationCommandsForSubtype(options.routeDecision?.subtype, changedFiles, context.projectSignals.scripts)
       : []
-    emitPipelineEvent(this.deps.onEvent, options.onEvent, {
-      type: 'verification_strategy_selected',
-      taskId,
-      subtype: options.routeDecision?.subtype,
-      commandIds: selectedCommands.map((command) => command.id),
-      commandLabels: selectedCommands.map((command) => command.label),
-      reason: options.routeDecision?.subtype ? `Selected by subtype=${options.routeDecision.subtype}` : 'Selected by default verification policy',
-    })
+    if (shouldRunVerification) {
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, {
+        type: 'verification_strategy_selected',
+        taskId,
+        subtype: options.routeDecision?.subtype,
+        commandIds: selectedCommands.map((command) => command.id),
+        commandLabels: selectedCommands.map((command) => command.label),
+        reason: options.routeDecision?.subtype ? `Selected by subtype=${options.routeDecision.subtype}` : 'Selected by default verification policy',
+      })
+    }
     const commands: VerificationCommand[] = []
     let verificationResults: VerificationResult[] = []
 
@@ -243,7 +245,8 @@ export class EngineeringExecutionPipeline {
         emitEngineeringEvent(this.deps.onEvent, { type: 'stage_failed', taskId, stage: 'review', error: message })
       }
     } else if (requiresCapability(options.routeDecision, 'review')) {
-      emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: false, skipped: true })
+      const skippedReason = diffError ? 'diff_error' : 'empty_diff'
+      emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: false, skipped: true, skippedReason })
     }
 
     return finalize({

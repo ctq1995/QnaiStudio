@@ -106,6 +106,7 @@ export class EngineeringTranscriptRecorder {
       type: mapTurnEventType(event),
       sessionId: event.sessionId,
       turnId: event.turnId,
+      taskId: getTurnEventTaskId(event),
       payload: event,
     })
   }
@@ -154,6 +155,11 @@ function mapLifecycleEventType(event: EngineeringLifecycleEvent): EngineeringTra
   if (event.type === 'AfterTool') return 'tool_result'
   if (event.type === 'AfterVerify') return 'verification_result'
   return 'lifecycle_event'
+}
+
+function getTurnEventTaskId(event: EngineeringTurnEvent): string | undefined {
+  if ('taskId' in event && typeof event.taskId === 'string') return event.taskId
+  return undefined
 }
 
 function mapTurnEventType(event: EngineeringTurnEvent): EngineeringTranscriptEventType {

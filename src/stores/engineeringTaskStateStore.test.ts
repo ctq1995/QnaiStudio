@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineeringTaskState } from '../ai-runtime/engineering';
 import { useEngineeringTaskStateStore } from './engineeringTaskStateStore';
 
@@ -76,6 +76,32 @@ describe('engineeringTaskStateStore', () => {
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().lastActionResult).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([]);
+  });
+
+  it('records control audit events through configured transcript bridge', async () => {
+    const record = vi.fn().mockResolvedValue([]);
+    useEngineeringTaskStateStore.getState().setControlTranscriptBridge({ record });
+
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
+    await Promise.resolve();
+
+    expect(record).toHaveBeenCalledWith([
+      expect.objectContaining({ type: 'task_control_requested', taskId: 'task-1', action: 'cancel' }),
+      expect.objectContaining({ type: 'task_control_dispatched', taskId: 'task-1', action: 'cancel', status: 'accepted' }),
+    ]);
+    expect(useEngineeringTaskStateStore.getState().lastControlTranscriptError).toBeUndefined();
+  });
+
+  it('records transcript bridge errors without blocking action dispatch', async () => {
+    const record = vi.fn().mockRejectedValue(new Error('record failed'));
+    useEngineeringTaskStateStore.getState().setControlTranscriptBridge({ record });
+
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastActionResult).toEqual(expect.objectContaining({ status: 'accepted' }));
+    expect(useEngineeringTaskStateStore.getState().lastControlTranscriptError).toBe('record failed');
   });
 
   it('clears store state and handles missing snapshot taskStates', () => {

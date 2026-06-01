@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { EngineeringTaskState } from '../ai-runtime/engineering';
 import { engineeringTaskStateService, filterTaskStates, type EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
 import { dispatchEngineeringTaskControlActionWithAudit, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+import type { EngineeringTaskControlTranscriptBridge } from '../services/engineeringTaskControlTranscriptBridge';
 
 type EngineeringTaskStateSnapshot = { taskStates?: EngineeringTaskState[] };
 
@@ -20,11 +21,14 @@ interface EngineeringTaskStateStore {
   lastActionRequest?: EngineeringTaskCenterActionRequest;
   lastActionResult?: EngineeringTaskControlDispatchResult;
   lastControlAuditEvents: EngineeringTaskControlAuditEvent[];
+  lastControlTranscriptError?: string;
+  controlTranscriptBridge?: EngineeringTaskControlTranscriptBridge;
   setTaskStates: (states: EngineeringTaskState[]) => void;
   upsertTaskState: (state: EngineeringTaskState) => void;
   syncFromRuntimeSnapshot: (snapshot: EngineeringTaskStateSnapshot) => void;
   requestTaskAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
   dispatchTaskAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
+  setControlTranscriptBridge: (bridge?: EngineeringTaskControlTranscriptBridge) => void;
   setFilter: (filter: EngineeringTaskStateFilter) => void;
   selectTask: (taskId: string) => void;
   clear: () => void;
@@ -74,7 +78,13 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
       lastActionRequest: request,
       lastActionResult: dispatch.result,
       lastControlAuditEvents: dispatch.events,
+      lastControlTranscriptError: undefined,
     });
+    recordControlAuditEvents(get().controlTranscriptBridge, dispatch.events, set);
+  },
+
+  setControlTranscriptBridge: (bridge) => {
+    set({ controlTranscriptBridge: bridge, lastControlTranscriptError: undefined });
   },
 
   setFilter: (filter) => {
@@ -87,13 +97,30 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [] });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlTranscriptError: undefined, controlTranscriptBridge: undefined });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),
 
   getActiveTask: () => get().taskStates.find((state) => state.taskId === get().activeTaskId),
 }));
+
+function recordControlAuditEvents(
+  bridge: EngineeringTaskControlTranscriptBridge | undefined,
+  events: EngineeringTaskControlAuditEvent[],
+  set: (state: Partial<EngineeringTaskStateStore>) => void,
+): void {
+  if (!bridge) return;
+  bridge.record(events).catch((error: unknown) => {
+    set({ lastControlTranscriptError: stringifyError(error) });
+  });
+}
+
+function stringifyError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Failed to record task control transcript events';
+}
 
 export { engineeringTaskStateService } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';

@@ -1,5 +1,6 @@
 import { registerAIEventTranscriptAutoWiring } from '../services/aiEventTranscriptAutoWiring'
 import { syncEngineeringTaskStateFromRuntime } from '../services/engineeringTaskStateRuntimeBridge'
+import { useEngineeringTaskStateStore } from '../stores/engineeringTaskStateStore'
 import {
   createEngineeringTaskRunner,
   getTaskManager,
@@ -17,6 +18,7 @@ import {
   type EngineeringRuntimeTranscriptAutoWiring,
   type EngineeringRuntimeTranscriptAutoWiringInput,
   type EngineeringRuntimeTurnHook,
+  type EngineeringTaskStateChangedHandler,
   type TaskManager,
 } from '../ai-runtime'
 
@@ -51,6 +53,7 @@ export interface EngineeringPipelineRunnerRegistrationInput extends EngineeringP
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  onTaskStateChanged?: EngineeringTaskStateChangedHandler
   afterRuntimeTurn?: EngineeringRuntimeTurnHook
   mapTaskToRunInput?: EngineeringTaskInputMapper
 }
@@ -80,6 +83,7 @@ export function registerEngineeringPipelineRunner(input: EngineeringPipelineRunn
       transcriptRecorder: input.transcriptRecorder,
       transcriptAutoWiring: input.transcriptAutoWiring || registerDefaultAIEventTranscriptAutoWiring,
       taskStateTracker: input.taskStateTracker,
+      onTaskStateChanged: input.onTaskStateChanged || syncTaskStatesToStore,
       afterRuntimeTurn: input.afterRuntimeTurn || syncEngineeringTaskStateFromRuntime,
       mapTaskToRunInput: input.mapTaskToRunInput,
       pipelineDeps,
@@ -108,6 +112,14 @@ function registerDefaultAIEventTranscriptAutoWiring(input: EngineeringRuntimeTra
       taskId: event.taskId,
     }),
   })
+}
+
+function syncTaskStatesToStore(states: Parameters<EngineeringTaskStateChangedHandler>[0]): void {
+  try {
+    useEngineeringTaskStateStore.getState().setTaskStates(states)
+  } catch {
+    // Live task-state UI sync must not break runtime execution.
+  }
 }
 
 function createRunnerFromAdapter(adapter: EngineeringTaskRunnerAdapterInput | undefined): EngineeringTaskRunner {

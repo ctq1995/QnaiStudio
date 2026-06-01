@@ -15,6 +15,7 @@ export interface EngineeringRuntimeTranscriptAutoWiringInput {
 }
 
 export type EngineeringRuntimeTranscriptAutoWiring = (input: EngineeringRuntimeTranscriptAutoWiringInput) => EngineeringRuntimeTranscriptAutoWiringCleanup
+export type EngineeringTaskStateChangedHandler = (states: EngineeringTaskState[]) => void
 
 export interface EngineeringRuntimeDeps {
   sessionId: string
@@ -25,6 +26,7 @@ export interface EngineeringRuntimeDeps {
   transcriptRecordErrors?: string[]
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  onTaskStateChanged?: EngineeringTaskStateChangedHandler
 }
 
 export interface EngineeringRuntimeFromTurnRunnerDepsInput {
@@ -34,6 +36,7 @@ export interface EngineeringRuntimeFromTurnRunnerDepsInput {
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  onTaskStateChanged?: EngineeringTaskStateChangedHandler
 }
 
 export interface EngineeringRuntimeTurnResult {
@@ -83,11 +86,13 @@ export class EngineeringRuntime {
       ...input.turnRunnerDeps,
       onTurnEvent: (event) => {
         safeRecordTaskState(() => taskStateTracker.recordTurnEvent(event))
+        safeNotifyTaskStateChanged(input.onTaskStateChanged, taskStateTracker)
         enqueueTranscriptWrite(transcriptRecorder.recordTurnEvent(event).then(() => undefined))
         input.turnRunnerDeps.onTurnEvent?.(event)
       },
       onRunEvent: (event) => {
         safeRecordTaskState(() => taskStateTracker.recordRunEvent(event))
+        safeNotifyTaskStateChanged(input.onTaskStateChanged, taskStateTracker)
         input.turnRunnerDeps.onRunEvent?.(event)
       },
     })
@@ -101,6 +106,7 @@ export class EngineeringRuntime {
       transcriptRecordErrors,
       transcriptAutoWiring: input.transcriptAutoWiring,
       taskStateTracker,
+      onTaskStateChanged: input.onTaskStateChanged,
     })
   }
 
@@ -247,6 +253,18 @@ function safeRecordTaskState(record: () => unknown): void {
     record()
   } catch {
     // Task state tracking is observational; it must not break runtime execution.
+  }
+}
+
+function safeNotifyTaskStateChanged(
+  handler: EngineeringTaskStateChangedHandler | undefined,
+  taskStateTracker: EngineeringTaskStateTracker,
+): void {
+  if (!handler) return
+  try {
+    handler(taskStateTracker.getAllTaskStates())
+  } catch {
+    // Task state UI sync is observational; it must not break runtime execution.
   }
 }
 

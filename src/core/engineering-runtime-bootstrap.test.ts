@@ -23,7 +23,7 @@ describe('registerEngineeringPipelineRunner task state auto sync', () => {
     ]);
   });
 
-  it('respects caller-provided afterRuntimeTurn override', async () => {
+  it('respects caller-provided afterRuntimeTurn override without disabling live sync', async () => {
     const calls: string[] = [];
     const taskManager = createTaskManager();
     registerEngineeringPipelineRunner({
@@ -35,6 +35,24 @@ describe('registerEngineeringPipelineRunner task state auto sync', () => {
     await taskManager.runner(createTask(), new AbortController().signal);
 
     expect(calls).toEqual(['engineering-session-task-1']);
+    expect(useEngineeringTaskStateStore.getState().taskStates).toEqual([
+      expect.objectContaining({ taskId: 'task-1', status: 'completed' }),
+    ]);
+  });
+
+  it('respects caller-provided onTaskStateChanged override', async () => {
+    const calls: number[] = [];
+    const taskManager = createTaskManager();
+    registerEngineeringPipelineRunner({
+      taskManager: taskManager as any,
+      onTaskStateChanged: (states) => calls.push(states.length),
+      afterRuntimeTurn: () => undefined,
+      ...createPipelineInput(),
+    });
+
+    await taskManager.runner(createTask(), new AbortController().signal);
+
+    expect(calls.length).toBeGreaterThan(0);
     expect(useEngineeringTaskStateStore.getState().taskStates).toEqual([]);
   });
 });

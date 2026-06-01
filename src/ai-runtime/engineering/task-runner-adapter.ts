@@ -1,6 +1,6 @@
 import type { AITask } from '../task'
 import type { EngineeringTaskRunner, EngineeringTaskRunnerResult } from '../task-manager'
-import { createEngineeringRuntime, type EngineeringRuntime, type EngineeringRuntimeTranscriptAutoWiring, type EngineeringRuntimeTurnResult } from './engineering-runtime'
+import { createEngineeringRuntime, type EngineeringRuntime, type EngineeringRuntimeTranscriptAutoWiring, type EngineeringRuntimeTurnResult, type EngineeringTaskStateChangedHandler } from './engineering-runtime'
 import type { EngineeringExecutionPipelineDeps } from './execution-pipeline'
 import type { EngineeringLifecycleRuntime } from './lifecycle-runtime'
 import type { EngineeringPermissionMode } from './permission-policy'
@@ -18,6 +18,7 @@ export interface EngineeringTaskRunnerAdapterInput {
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  onTaskStateChanged?: EngineeringTaskStateChangedHandler
   afterRuntimeTurn?: EngineeringRuntimeTurnHook
   pipelineDeps?: EngineeringExecutionPipelineDeps
   turnRunnerDeps?: EngineeringTurnRunnerDeps
@@ -46,6 +47,7 @@ export function createEngineeringTaskRunner(input: EngineeringTaskRunnerAdapterI
         transcriptRecorder: input.transcriptRecorder,
         transcriptAutoWiring: input.transcriptAutoWiring,
         taskStateTracker: input.taskStateTracker,
+        onTaskStateChanged: input.onTaskStateChanged,
       })
       const result = await runtime.runTurn({
         ...mapTaskToRunInput(task),

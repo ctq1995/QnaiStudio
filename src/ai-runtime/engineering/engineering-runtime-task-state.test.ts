@@ -76,6 +76,38 @@ describe('EngineeringRuntime task state wiring', () => {
     expect(transcriptSnapshot.events.length).toBeGreaterThan(0)
     expect(runtime.snapshot().taskStates).toEqual([])
   })
+
+  it('notifies task state changes after turn and run events', async () => {
+    const snapshots: string[][] = []
+    const runtime = createRuntime({
+      onTaskStateChanged: (states) => snapshots.push(states.map((state) => `${state.taskId}:${state.status}:${state.route || ''}`)),
+    })
+
+    await runtime.runTurn(createInput('run lint'))
+
+    expect(snapshots.length).toBeGreaterThan(1)
+    expect(snapshots.some((states) => states.includes('task-runtime-test:routed:verify'))).toBe(true)
+    expect(snapshots[snapshots.length - 1]).toContain('task-runtime-test:completed:verify')
+  })
+
+  it('continues when task state changed handler throws', async () => {
+    const runtime = createRuntime({
+      onTaskStateChanged: () => {
+        throw new Error('live sync failed')
+      },
+    })
+
+    await expect(runtime.runTurn(createInput('run lint'))).resolves.toEqual(expect.objectContaining({
+      turn: expect.objectContaining({
+        status: 'idle',
+        summary: expect.objectContaining({ success: true }),
+      }),
+    }))
+    expect(runtime.snapshot().taskStates).toContainEqual(expect.objectContaining({
+      taskId: 'task-runtime-test',
+      status: 'completed',
+    }))
+  })
 })
 
 function createInput(userRequest: string): EngineeringTurnInput {
@@ -92,6 +124,7 @@ function createRuntime(options: {
   transcriptRecorder?: EngineeringTranscriptRecorder
   onTurnEvent?: (event: EngineeringTurnEvent) => void
   onRunEvent?: (event: EngineeringRunEvent) => void
+  onTaskStateChanged?: (states: ReturnType<EngineeringTaskStateTracker['getAllTaskStates']>) => void
 } = {}) {
   const pipelineDeps = createPipelineDeps()
   const turnRunnerDeps = createEngineeringTurnRunnerDepsFromPipelineDeps(pipelineDeps)
@@ -100,6 +133,7 @@ function createRuntime(options: {
     sessionId: 'session-runtime-test',
     transcriptRecorder: options.transcriptRecorder,
     taskStateTracker: options.taskStateTracker,
+    onTaskStateChanged: options.onTaskStateChanged,
     turnRunnerDeps: {
       ...turnRunnerDeps,
       onTurnEvent: options.onTurnEvent,

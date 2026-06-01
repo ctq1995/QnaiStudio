@@ -4,9 +4,15 @@ export interface TranscriptPayloadPolicyOptions {
   maxObjectKeys?: number
   maxDepth?: number
   redactKeys?: RegExp
+  secretPatterns?: TranscriptSecretPattern[]
 }
 
-export type TranscriptPayloadPolicyActionType = 'redacted' | 'truncated' | 'array_truncated' | 'object_truncated' | 'max_depth' | 'circular' | 'converted'
+export interface TranscriptSecretPattern {
+  name: string
+  pattern: RegExp
+}
+
+export type TranscriptPayloadPolicyActionType = 'redacted' | 'secret_redacted' | 'truncated' | 'array_truncated' | 'object_truncated' | 'max_depth' | 'circular' | 'converted'
 
 export interface TranscriptPayloadPolicyAction {
   type: TranscriptPayloadPolicyActionType
@@ -26,6 +32,13 @@ const DEFAULT_MAX_ARRAY_ITEMS = 50
 const DEFAULT_MAX_OBJECT_KEYS = 80
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_REDACT_KEYS = /(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i
+const DEFAULT_SECRET_PATTERNS: TranscriptSecretPattern[] = [
+  { name: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { name: 'openai_key', pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+  { name: 'github_token', pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b/g },
+  { name: 'aws_access_key', pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  { name: 'private_key_block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
+]
 const REDACTED_VALUE = '[redacted]'
 
 export function createTranscriptPayloadPolicy(options: TranscriptPayloadPolicyOptions = {}): TranscriptPayloadPolicy {
@@ -35,6 +48,7 @@ export function createTranscriptPayloadPolicy(options: TranscriptPayloadPolicyOp
     maxObjectKeys: options.maxObjectKeys ?? DEFAULT_MAX_OBJECT_KEYS,
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
     redactKeys: options.redactKeys ?? DEFAULT_REDACT_KEYS,
+    secretPatterns: options.secretPatterns ?? DEFAULT_SECRET_PATTERNS,
   }
 
   return (payload) => {
@@ -55,7 +69,7 @@ function sanitizeTranscriptPayload(
   actions: TranscriptPayloadPolicyAction[],
 ): unknown {
   if (value === null || value === undefined) return value
-  if (typeof value === 'string') return truncateString(value, options.maxStringLength, path, actions)
+  if (typeof value === 'string') return sanitizeString(value, options, path, actions)
   if (typeof value === 'number' || typeof value === 'boolean') return value
   if (typeof value === 'bigint') {
     actions.push({ type: 'converted', path, detail: 'bigint converted to string' })
@@ -108,6 +122,35 @@ function sanitizeTranscriptPayload(
 
   actions.push({ type: 'converted', path, detail: 'unknown value converted to string' })
   return String(value)
+}
+
+function sanitizeString(
+  value: string,
+  options: Required<TranscriptPayloadPolicyOptions>,
+  path: string,
+  actions: TranscriptPayloadPolicyAction[],
+): string {
+  const redacted = redactSecretPatterns(value, options.secretPatterns, path, actions)
+  return truncateString(redacted, options.maxStringLength, path, actions)
+}
+
+function redactSecretPatterns(
+  value: string,
+  secretPatterns: TranscriptSecretPattern[],
+  path: string,
+  actions: TranscriptPayloadPolicyAction[],
+): string {
+  let redacted = value
+  for (const secretPattern of secretPatterns) {
+    secretPattern.pattern.lastIndex = 0
+    if (!secretPattern.pattern.test(redacted)) continue
+    secretPattern.pattern.lastIndex = 0
+    redacted = redacted.replace(secretPattern.pattern, () => {
+      actions.push({ type: 'secret_redacted', path, detail: `matched ${secretPattern.name}` })
+      return REDACTED_VALUE
+    })
+  }
+  return redacted
 }
 
 function matchesRedactKey(redactKeys: RegExp, key: string): boolean {

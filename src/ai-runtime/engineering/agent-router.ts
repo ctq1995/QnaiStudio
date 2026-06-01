@@ -57,7 +57,7 @@ function inferRoute(userRequest: string, classification: EngineeringTaskClassifi
 
 function resolvePermissionMode(route: EngineeringAgentRoute, requested?: EngineeringPermissionMode): EngineeringPermissionMode {
   if (requested) return requested
-  if (route === 'execute') return 'default'
+  if (route === 'execute' || route === 'verify') return 'default'
   return 'plan'
 }
 

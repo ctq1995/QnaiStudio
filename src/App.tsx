@@ -6,6 +6,7 @@ import { EnhancedChatMessages, ChatInput } from './components/Chat';
 import { ToolPanel } from './components/ToolPanel';
 import { EditorPanel } from './components/Editor';
 import { DeveloperPanel } from './components/Developer';
+import { TaskCenterPanel } from './components/TaskCenter';
 import { TopMenuBar as TopMenuBarComponent } from './components/TopMenuBar';
 import { CreateWorkspaceModal } from './components/Workspace';
 import { SessionHistoryPanel } from './components/Chat/SessionHistoryPanel';
@@ -45,6 +46,8 @@ function App() {
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [showTaskCenterPanel] = useState(true);
+  const [taskCenterPanelWidth, setTaskCenterPanelWidth] = useState(360);
   const [startupFailureDismissed, setStartupFailureDismissed] = useState(false);
   const [startupCheckFinished, setStartupCheckFinished] = useState(false);
   const [workspacesHydrated, setWorkspacesHydrated] = useState(
@@ -463,9 +466,16 @@ function App() {
     setDeveloperPanelWidth(newWidth);
   };
 
+  // TaskCenterPanel 拖拽处理（左边手柄）
+  const handleTaskCenterPanelResize = (delta: number) => {
+    const newWidth = Math.max(300, Math.min(720, taskCenterPanelWidth - delta));
+    setTaskCenterPanelWidth(newWidth);
+  };
+
   // Editor/Chat 分割拖拽处理
   const handleEditorResize = (delta: number) => {
-    const containerWidth = window.innerWidth - sidebarWidth - toolPanelWidth - (showDeveloperPanel ? developerPanelWidth : 0);
+    const rightPanelWidth = toolPanelWidth + (showDeveloperPanel ? developerPanelWidth : 0) + (showTaskCenterPanel ? taskCenterPanelWidth : 0);
+    const containerWidth = window.innerWidth - sidebarWidth - rightPanelWidth;
     const currentEditorWidth = containerWidth * (editorWidth / 100);
     const newEditorWidth = currentEditorWidth + delta;
     const minEditorWidth = containerWidth * 0.3;
@@ -584,6 +594,21 @@ function App() {
                 {showDeveloperPanel && (
                   <DeveloperPanel
                     width={developerPanelWidth}
+                    className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
+                  />
+                )}
+
+                {showTaskCenterPanel && (
+                  <ResizeHandle
+                    direction="horizontal"
+                    position="left"
+                    onDrag={handleTaskCenterPanelResize}
+                  />
+                )}
+
+                {showTaskCenterPanel && (
+                  <TaskCenterPanel
+                    width={taskCenterPanelWidth}
                     className="overflow-hidden rounded-2xl border border-border border-l-0 bg-background-elevated/80 shadow-soft"
                   />
                 )}

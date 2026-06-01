@@ -4,6 +4,15 @@ import { classifyEngineeringTask } from './task-classifier'
 import type { EngineeringRunInput, EngineeringTaskClassification } from './types'
 
 export type EngineeringAgentRoute = 'plan' | 'execute' | 'verify' | 'review' | 'explain' | 'unknown'
+export type EngineeringAgentRouteSubtype =
+  | 'review.diff'
+  | 'review.architecture'
+  | 'review.security'
+  | 'review.performance'
+  | 'verify.build'
+  | 'verify.test'
+  | 'verify.lint'
+  | 'verify.typecheck'
 export type EngineeringAgentRouteRiskLevel = 'low' | 'medium' | 'high'
 export type EngineeringAgentRouteCapability = 'context' | 'snapshot' | 'agent_execution' | 'git_diff' | 'verification' | 'review'
 
@@ -13,6 +22,7 @@ export interface EngineeringAgentRouterInput extends EngineeringRunInput {
 
 export interface EngineeringAgentRouteDecision {
   route: EngineeringAgentRoute
+  subtype?: EngineeringAgentRouteSubtype
   classification: EngineeringTaskClassification
   runModeDecision: EngineeringRunModeDecision
   permissionMode: EngineeringPermissionMode
@@ -26,6 +36,7 @@ export function routeEngineeringAgentTask(input: EngineeringAgentRouterInput): E
   const classification = classifyEngineeringTask(input.userRequest)
   const route = input.requestedRoute || inferRoute(input.userRequest, classification)
   const permissionMode = resolvePermissionMode(route, input.permissionMode)
+  const subtype = inferRouteSubtype(input.userRequest, route)
   const runModeDecision = resolveEngineeringRunMode({
     requestedMode: route === 'execute' ? input.runMode || 'act' : 'plan',
     classification,
@@ -34,6 +45,7 @@ export function routeEngineeringAgentTask(input: EngineeringAgentRouterInput): E
 
   return {
     route,
+    subtype,
     classification,
     runModeDecision,
     permissionMode,
@@ -47,12 +59,33 @@ export function routeEngineeringAgentTask(input: EngineeringAgentRouterInput): E
 function inferRoute(userRequest: string, classification: EngineeringTaskClassification): EngineeringAgentRoute {
   const normalized = userRequest.trim().toLowerCase()
   if (classification.kind === 'review' || /\b(review|audit)\b/i.test(userRequest) || /审查|检查|评审/.test(userRequest)) return 'review'
-  if (/\b(verify|test|validate|build)\b/i.test(userRequest) || /验证|测试|构建/.test(userRequest)) return 'verify'
+  if (/\b(verify|test|tests|validate|build|lint|typecheck)\b/i.test(userRequest) || /验证|测试|构建|类型检查/.test(userRequest)) return 'verify'
   if (classification.kind === 'explain' || /\b(explain|describe|how|why|analyze)\b/i.test(userRequest) || /说明|解释|分析/.test(userRequest)) return 'explain'
   if (classification.kind === 'feature' || classification.kind === 'bugfix' || classification.kind === 'refactor') return 'execute'
   if (/\b(add|create|implement|fix|refactor|update|modify|change)\b/i.test(userRequest)) return 'execute'
   if (normalized.length < 16) return 'unknown'
   return 'plan'
+}
+
+function inferRouteSubtype(userRequest: string, route: EngineeringAgentRoute): EngineeringAgentRouteSubtype | undefined {
+  const text = userRequest.toLowerCase()
+  if (route === 'review') return inferReviewSubtype(text)
+  if (route === 'verify') return inferVerifySubtype(text)
+  return undefined
+}
+
+function inferReviewSubtype(text: string): EngineeringAgentRouteSubtype {
+  if (/security|安全|漏洞|vulnerab|auth|权限|secret|token|xss|csrf|sql/.test(text)) return 'review.security'
+  if (/performance|性能|latency|slow|render|bundle|memory|n\+1/.test(text)) return 'review.performance'
+  if (/architecture|架构|设计|module|boundary|abstraction|dependency|结构/.test(text)) return 'review.architecture'
+  return 'review.diff'
+}
+
+function inferVerifySubtype(text: string): EngineeringAgentRouteSubtype {
+  if (/typecheck|type check|类型|tsc/.test(text)) return 'verify.typecheck'
+  if (/lint|eslint|代码规范/.test(text)) return 'verify.lint'
+  if (/test|测试|spec|vitest|jest/.test(text)) return 'verify.test'
+  return 'verify.build'
 }
 
 function resolvePermissionMode(route: EngineeringAgentRoute, requested?: EngineeringPermissionMode): EngineeringPermissionMode {

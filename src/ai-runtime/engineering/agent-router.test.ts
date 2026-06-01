@@ -35,6 +35,7 @@ describe('routeEngineeringAgentTask', () => {
     })
 
     expect(decision.route).toBe('review')
+    expect(decision.subtype).toBe('review.diff')
     expect(decision.requiredCapabilities).toEqual(['context', 'git_diff', 'review'])
     expect(decision.riskLevel).toBe('low')
   })
@@ -48,5 +49,18 @@ describe('routeEngineeringAgentTask', () => {
     expect(decision.route).toBe('unknown')
     expect(decision.permissionMode).toBe('plan')
     expect(decision.requiredCapabilities).toEqual(['context'])
+  })
+
+  it('infers review subtypes', () => {
+    expect(routeEngineeringAgentTask({ userRequest: 'security review auth flow', workspaceDir }).subtype).toBe('review.security')
+    expect(routeEngineeringAgentTask({ userRequest: 'architecture review module boundaries', workspaceDir }).subtype).toBe('review.architecture')
+    expect(routeEngineeringAgentTask({ userRequest: 'performance review slow rendering', workspaceDir }).subtype).toBe('review.performance')
+  })
+
+  it('infers verification subtypes', () => {
+    expect(routeEngineeringAgentTask({ userRequest: 'run tests', workspaceDir }).subtype).toBe('verify.test')
+    expect(routeEngineeringAgentTask({ userRequest: 'run lint', workspaceDir }).subtype).toBe('verify.lint')
+    expect(routeEngineeringAgentTask({ userRequest: 'run typecheck', workspaceDir }).subtype).toBe('verify.typecheck')
+    expect(routeEngineeringAgentTask({ userRequest: 'verify build', workspaceDir }).subtype).toBe('verify.build')
   })
 })

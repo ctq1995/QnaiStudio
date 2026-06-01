@@ -142,7 +142,8 @@ function createTimelineSummary(event: EngineeringTranscriptEvent): string | unde
   if (event.type === 'route_decision') {
     const payload = event.payload
     if (isRouteDecisionPayload(payload)) {
-      return `route=${payload.route} risk=${payload.riskLevel} permission=${payload.permissionMode} skipped=${payload.skippedStages.join(',') || 'none'}`
+      const subtypePart = payload.subtype ? ` subtype=${payload.subtype}` : ''
+      return `route=${payload.route}${subtypePart} risk=${payload.riskLevel} permission=${payload.permissionMode} skipped=${payload.skippedStages.join(',') || 'none'}`
     }
   }
   if (event.type === 'stage_skipped') {
@@ -161,7 +162,7 @@ function isStageSkippedPayload(payload: unknown): payload is { stage: string; re
   return typeof candidate.stage === 'string' && typeof candidate.reason === 'string'
 }
 
-function isRouteDecisionPayload(payload: unknown): payload is { route: string; riskLevel: string; permissionMode: string; skippedStages: string[] } {
+function isRouteDecisionPayload(payload: unknown): payload is { route: string; subtype?: string; riskLevel: string; permissionMode: string; skippedStages: string[] } {
   if (!payload || typeof payload !== 'object') return false
   const candidate = payload as { route?: unknown; riskLevel?: unknown; permissionMode?: unknown; skippedStages?: unknown }
   return typeof candidate.route === 'string'

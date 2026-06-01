@@ -21,7 +21,7 @@ export interface EngineeringTurnResult {
 
 export type EngineeringTurnEvent =
   | { type: 'turn_started'; sessionId: string; turnId: string }
-  | { type: 'route_decided'; sessionId: string; turnId: string; route: EngineeringAgentRouteDecision['route']; riskLevel: EngineeringAgentRouteDecision['riskLevel']; permissionMode: EngineeringAgentRouteDecision['permissionMode']; requiredCapabilities: EngineeringAgentRouteDecision['requiredCapabilities']; skippedStages: EngineeringAgentRouteDecision['skippedStages']; reason: string }
+  | { type: 'route_decided'; sessionId: string; turnId: string; route: EngineeringAgentRouteDecision['route']; subtype?: EngineeringAgentRouteDecision['subtype']; riskLevel: EngineeringAgentRouteDecision['riskLevel']; permissionMode: EngineeringAgentRouteDecision['permissionMode']; requiredCapabilities: EngineeringAgentRouteDecision['requiredCapabilities']; skippedStages: EngineeringAgentRouteDecision['skippedStages']; reason: string }
   | { type: 'stage_skipped'; sessionId: string; turnId: string; stage: EngineeringStage; reason: string }
   | { type: 'turn_completed'; sessionId: string; turnId: string; success: boolean }
   | { type: 'turn_failed'; sessionId: string; turnId: string; error: string }
@@ -51,6 +51,7 @@ export class EngineeringTurnRunner {
       sessionId: input.sessionId,
       turnId,
       route: routeDecision.route,
+      subtype: routeDecision.subtype,
       riskLevel: routeDecision.riskLevel,
       permissionMode: routeDecision.permissionMode,
       requiredCapabilities: routeDecision.requiredCapabilities,

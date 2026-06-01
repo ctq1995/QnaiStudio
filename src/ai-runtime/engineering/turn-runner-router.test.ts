@@ -26,6 +26,7 @@ describe('EngineeringTurnRunner router integration', () => {
     expect(routeEvent).toEqual(expect.objectContaining({
       type: 'route_decided',
       route: 'review',
+      subtype: 'review.diff',
       riskLevel: 'low',
     }))
     expect(events.filter((event) => event.type === 'stage_skipped').map((event) => event.stage)).toEqual(['snapshot', 'execute', 'verify'])

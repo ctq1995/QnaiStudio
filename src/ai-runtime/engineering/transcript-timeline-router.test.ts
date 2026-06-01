@@ -15,6 +15,7 @@ describe('transcript timeline route decisions', () => {
           createdAt: '2026-01-01T00:00:00.000Z',
           payload: {
             route: 'review',
+            subtype: 'review.diff',
             riskLevel: 'low',
             permissionMode: 'plan',
             requiredCapabilities: ['context', 'git_diff', 'review'],
@@ -43,7 +44,7 @@ describe('transcript timeline route decisions', () => {
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
-      summary: 'route=review risk=low permission=plan skipped=snapshot,execute,verify',
+      summary: 'route=review subtype=review.diff risk=low permission=plan skipped=snapshot,execute,verify',
     }))
     expect(timeline.items[1]).toEqual(expect.objectContaining({
       kind: 'skipped',

@@ -15,6 +15,8 @@ export type EngineeringTranscriptEventType =
   | 'review_result'
   | 'route_decision'
   | 'stage_skipped'
+  | 'verification_strategy'
+  | 'review_strategy'
   | 'note'
 
 export interface EngineeringTranscriptEvent<TPayload = unknown> {
@@ -158,6 +160,8 @@ function mapTurnEventType(event: EngineeringTurnEvent): EngineeringTranscriptEve
   if (event.type === 'turn_started') return 'turn_started'
   if (event.type === 'route_decided') return 'route_decision'
   if (event.type === 'stage_skipped') return 'stage_skipped'
+  if (event.type === 'verification_strategy_selected') return 'verification_strategy'
+  if (event.type === 'review_strategy_selected') return 'review_strategy'
   if (event.type === 'turn_completed') return 'turn_completed'
   return 'turn_failed'
 }

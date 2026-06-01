@@ -35,12 +35,41 @@ describe('transcript timeline route decisions', () => {
             reason: 'Skipped by route=review: explicit review request',
           },
         },
+        {
+          id: 'verify-strategy-1',
+          sequence: 3,
+          type: 'verification_strategy',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:02.000Z',
+          payload: {
+            subtype: 'verify.lint',
+            commandIds: ['npm-lint'],
+            commandLabels: ['Frontend lint'],
+            reason: 'Selected by subtype=verify.lint',
+          },
+        },
+        {
+          id: 'review-strategy-1',
+          sequence: 4,
+          type: 'review_strategy',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:03.000Z',
+          payload: {
+            subtype: 'review.security',
+            focus: 'security',
+            reason: 'Selected by subtype=review.security',
+          },
+        },
       ],
     }
 
     const timeline = buildEngineeringTranscriptTimeline(snapshot)
 
-    expect(timeline.items).toHaveLength(2)
+    expect(timeline.items).toHaveLength(4)
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
@@ -50,6 +79,16 @@ describe('transcript timeline route decisions', () => {
       kind: 'skipped',
       title: 'Stage skipped',
       summary: 'stage=execute reason=Skipped by route=review: explicit review request',
+    }))
+    expect(timeline.items[2]).toEqual(expect.objectContaining({
+      kind: 'strategy',
+      title: 'Verification strategy selected',
+      summary: 'verification subtype=verify.lint commands=npm-lint',
+    }))
+    expect(timeline.items[3]).toEqual(expect.objectContaining({
+      kind: 'strategy',
+      title: 'Review strategy selected',
+      summary: 'review subtype=review.security focus=security',
     }))
   })
 })

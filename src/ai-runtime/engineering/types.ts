@@ -148,6 +148,8 @@ export type EngineeringRunEvent =
   | { type: 'snapshot_created'; taskId: string; versionId: string; label?: string }
   | { type: 'verification_started'; taskId: string; command: VerificationCommand }
   | { type: 'verification_completed'; taskId: string; command: VerificationCommand; success: boolean }
+  | { type: 'verification_strategy_selected'; taskId: string; subtype?: EngineeringAgentRouteDecision['subtype']; commandIds: string[]; commandLabels: string[]; reason: string }
+  | { type: 'review_strategy_selected'; taskId: string; subtype?: EngineeringAgentRouteDecision['subtype']; focus: string; reason: string }
   | { type: 'review_completed'; taskId: string; success: boolean; skipped?: boolean }
 
 export type EngineeringRunEventHandler = (event: EngineeringRunEvent) => void

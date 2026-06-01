@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { routeEngineeringAgentTask } from './agent-router'
 import { EngineeringExecutionPipeline, type EngineeringExecutionPipelineDeps } from './execution-pipeline'
 import { buildProjectFingerprint } from './project-fingerprint'
-import type { EngineeringContext, EngineeringRunInput, ReviewResult, VerificationCommand, VerificationResult } from './types'
+import type { EngineeringContext, EngineeringRunEvent, EngineeringRunInput, ReviewResult, VerificationCommand, VerificationResult } from './types'
 
 const workspaceDir = 'E:/workspace/project'
 const frontendDiff = 'diff --git a/src/App.tsx b/src/App.tsx\nindex 111..222 100644\n--- a/src/App.tsx\n+++ b/src/App.tsx\n'
@@ -37,6 +37,11 @@ describe('EngineeringExecutionPipeline router decisions', () => {
     expect(calls.diff).toBe(1)
     expect(calls.review).toBe(1)
     expect(calls.reviewPrompts[0]).toContain('security focus')
+    expect(calls.strategyEvents).toContainEqual(expect.objectContaining({
+      type: 'review_strategy_selected',
+      subtype: 'review.security',
+      focus: 'security',
+    }))
   })
 
   it('runs diff and verification for verify routes without executing the agent', async () => {
@@ -55,6 +60,11 @@ describe('EngineeringExecutionPipeline router decisions', () => {
     expect(calls.review).toBe(0)
     expect(summary.verificationResults).toHaveLength(1)
     expect(calls.verificationCommandIds).toEqual(['npm-lint'])
+    expect(calls.strategyEvents).toContainEqual(expect.objectContaining({
+      type: 'verification_strategy_selected',
+      subtype: 'verify.lint',
+      commandIds: ['npm-lint'],
+    }))
   })
 
   it('runs the full pipeline for execute routes', async () => {
@@ -86,6 +96,9 @@ function createPipeline(calls: ReturnType<typeof createCallTracker>): Engineerin
     onEvent: (event) => {
       if (event.type === 'stage_skipped') {
         calls.skippedStages.push(event.stage)
+      }
+      if (event.type === 'verification_strategy_selected' || event.type === 'review_strategy_selected') {
+        calls.strategyEvents.push(event)
       }
     },
     createSnapshot: async () => {
@@ -170,5 +183,6 @@ function createCallTracker() {
     verificationCommandIds: [] as string[],
     reviewPrompts: [] as string[],
     skippedStages: [] as string[],
+    strategyEvents: [] as EngineeringRunEvent[],
   }
 }

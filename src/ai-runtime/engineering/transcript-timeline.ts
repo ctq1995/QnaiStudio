@@ -9,6 +9,7 @@ export type EngineeringTranscriptTimelineItemKind =
   | 'review'
   | 'route'
   | 'skipped'
+  | 'strategy'
   | 'policy'
   | 'note'
   | 'event'
@@ -101,6 +102,7 @@ function mapTimelineKind(type: EngineeringTranscriptEventType): EngineeringTrans
   if (type === 'review_result') return 'review'
   if (type === 'route_decision') return 'route'
   if (type === 'stage_skipped') return 'skipped'
+  if (type === 'verification_strategy' || type === 'review_strategy') return 'strategy'
   if (type === 'note') return 'note'
   return 'event'
 }
@@ -125,6 +127,10 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
       return 'Route decided'
     case 'stage_skipped':
       return 'Stage skipped'
+    case 'verification_strategy':
+      return 'Verification strategy selected'
+    case 'review_strategy':
+      return 'Review strategy selected'
     case 'permission_decision':
       return 'Permission decision'
     case 'verification_result':
@@ -152,8 +158,34 @@ function createTimelineSummary(event: EngineeringTranscriptEvent): string | unde
       return `stage=${payload.stage} reason=${payload.reason}`
     }
   }
+  if (event.type === 'verification_strategy') {
+    const payload = event.payload
+    if (isVerificationStrategyPayload(payload)) {
+      const subtypePart = payload.subtype ? ` subtype=${payload.subtype}` : ''
+      return `verification${subtypePart} commands=${payload.commandIds.join(',') || 'none'}`
+    }
+  }
+  if (event.type === 'review_strategy') {
+    const payload = event.payload
+    if (isReviewStrategyPayload(payload)) {
+      const subtypePart = payload.subtype ? ` subtype=${payload.subtype}` : ''
+      return `review${subtypePart} focus=${payload.focus}`
+    }
+  }
   const parts = [event.sessionId && `session=${event.sessionId}`, event.turnId && `turn=${event.turnId}`, event.taskId && `task=${event.taskId}`].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : undefined
+}
+
+function isVerificationStrategyPayload(payload: unknown): payload is { subtype?: string; commandIds: string[] } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { commandIds?: unknown }
+  return Array.isArray(candidate.commandIds)
+}
+
+function isReviewStrategyPayload(payload: unknown): payload is { subtype?: string; focus: string } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { focus?: unknown }
+  return typeof candidate.focus === 'string'
 }
 
 function isStageSkippedPayload(payload: unknown): payload is { stage: string; reason: string } {

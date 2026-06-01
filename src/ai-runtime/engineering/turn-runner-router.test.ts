@@ -30,6 +30,11 @@ describe('EngineeringTurnRunner router integration', () => {
       riskLevel: 'low',
     }))
     expect(events.filter((event) => event.type === 'stage_skipped').map((event) => event.stage)).toEqual(['snapshot', 'execute', 'verify'])
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'review_strategy_selected',
+      subtype: 'review.diff',
+      focus: 'diff',
+    }))
     expect(calls).toHaveLength(1)
     expect(calls[0]).toEqual(expect.objectContaining({
       route: 'review',
@@ -70,8 +75,15 @@ describe('EngineeringTurnRunner router integration', () => {
 
 function createPipeline(calls: unknown[]) {
   return {
-    run: async (_input: unknown, options: { routeDecision?: unknown }) => {
+    run: async (_input: unknown, options: { routeDecision?: EngineeringAgentRouteDecision; onEvent?: (event: any) => void }) => {
       calls.push(options.routeDecision)
+      options.onEvent?.({
+        type: 'review_strategy_selected',
+        taskId: 'task-1',
+        subtype: options.routeDecision?.subtype,
+        focus: 'diff',
+        reason: 'test strategy event',
+      })
       return createSummary()
     },
   } as any

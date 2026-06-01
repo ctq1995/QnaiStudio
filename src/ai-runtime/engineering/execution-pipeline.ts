@@ -38,6 +38,7 @@ export interface EngineeringExecutionPipelineDeps {
 
 export interface EngineeringExecutionPipelineRunOptions {
   routeDecision?: EngineeringAgentRouteDecision
+  onEvent?: EngineeringRunEventHandler
 }
 
 export class EngineeringExecutionPipeline {
@@ -149,6 +150,14 @@ export class EngineeringExecutionPipeline {
     const selectedCommands = shouldRunVerification && (classification.requiresVerification || Boolean(options.routeDecision))
       ? selectVerificationCommandsForSubtype(options.routeDecision?.subtype, changedFiles, context.projectSignals.scripts)
       : []
+    emitPipelineEvent(this.deps.onEvent, options.onEvent, {
+      type: 'verification_strategy_selected',
+      taskId,
+      subtype: options.routeDecision?.subtype,
+      commandIds: selectedCommands.map((command) => command.id),
+      commandLabels: selectedCommands.map((command) => command.label),
+      reason: options.routeDecision?.subtype ? `Selected by subtype=${options.routeDecision.subtype}` : 'Selected by default verification policy',
+    })
     const commands: VerificationCommand[] = []
     let verificationResults: VerificationResult[] = []
 
@@ -212,6 +221,16 @@ export class EngineeringExecutionPipeline {
     let review: ReviewResult = { success: false, skipped: true }
     const shouldRunReviewStage = requiresCapability(options.routeDecision, 'review') && (classification.requiresReview || Boolean(options.routeDecision))
 
+    if (requiresCapability(options.routeDecision, 'review')) {
+      emitPipelineEvent(this.deps.onEvent, options.onEvent, {
+        type: 'review_strategy_selected',
+        taskId,
+        subtype: options.routeDecision?.subtype,
+        focus: reviewFocusFromSubtype(options.routeDecision?.subtype),
+        reason: options.routeDecision?.subtype ? `Selected by subtype=${options.routeDecision.subtype}` : 'Selected by default review policy',
+      })
+    }
+
     if (!diffError && shouldRunReviewStage && shouldRunReview(diff)) {
       emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'review' })
       try {
@@ -243,6 +262,22 @@ export class EngineeringExecutionPipeline {
       failedStage: diffError ? 'diff' : verificationFailed ? 'verify' : review.success === false && !review.skipped ? 'review' : undefined,
     })
   }
+}
+
+function emitPipelineEvent(
+  primary: EngineeringRunEventHandler | undefined,
+  secondary: EngineeringRunEventHandler | undefined,
+  event: Parameters<EngineeringRunEventHandler>[0],
+): void {
+  emitEngineeringEvent(primary, event)
+  if (secondary && secondary !== primary) emitEngineeringEvent(secondary, event)
+}
+
+function reviewFocusFromSubtype(subtype: EngineeringAgentRouteDecision['subtype']): string {
+  if (subtype === 'review.security') return 'security'
+  if (subtype === 'review.architecture') return 'architecture'
+  if (subtype === 'review.performance') return 'performance'
+  return 'diff'
 }
 
 function emitRouteSkippedStages(

@@ -143,6 +143,7 @@ export type EngineeringRunEvent =
   | { type: 'stage_started'; taskId: string; stage: EngineeringStage }
   | { type: 'stage_completed'; taskId: string; stage: EngineeringStage }
   | { type: 'stage_failed'; taskId: string; stage: EngineeringStage; error: string }
+  | { type: 'stage_skipped'; taskId: string; stage: EngineeringStage; reason: string }
   | { type: 'context_built'; taskId: string; candidateFileCount: number }
   | { type: 'snapshot_created'; taskId: string; versionId: string; label?: string }
   | { type: 'verification_started'; taskId: string; command: VerificationCommand }

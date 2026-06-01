@@ -20,6 +20,7 @@ import type {
   VerificationCommand,
   VerificationResult,
   EngineeringRunEventHandler,
+  EngineeringStage,
 } from './types'
 
 export interface EngineeringExecutionPipelineDeps {
@@ -58,6 +59,7 @@ export class EngineeringExecutionPipeline {
     emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'context' })
 
     const runModeDecision = options.routeDecision?.runModeDecision || resolveEngineeringRunMode({ requestedMode: input.runMode, classification })
+    emitRouteSkippedStages(this.deps.onEvent, taskId, options.routeDecision)
     const shouldExecuteAgent = requiresCapability(options.routeDecision, 'agent_execution')
 
     if (!runModeDecision.allowExecution && shouldExecuteAgent) {
@@ -241,6 +243,28 @@ export class EngineeringExecutionPipeline {
       failedStage: diffError ? 'diff' : verificationFailed ? 'verify' : review.success === false && !review.skipped ? 'review' : undefined,
     })
   }
+}
+
+function emitRouteSkippedStages(
+  onEvent: EngineeringRunEventHandler | undefined,
+  taskId: string,
+  routeDecision: EngineeringAgentRouteDecision | undefined,
+): void {
+  if (!routeDecision) return
+  for (const stage of routeDecision.skippedStages) {
+    if (isEngineeringStage(stage)) {
+      emitEngineeringEvent(onEvent, {
+        type: 'stage_skipped',
+        taskId,
+        stage,
+        reason: `Skipped by route=${routeDecision.route}: ${routeDecision.reason}`,
+      })
+    }
+  }
+}
+
+function isEngineeringStage(stage: string): stage is EngineeringStage {
+  return ['classify', 'context', 'snapshot', 'execute', 'diff', 'verify', 'review', 'summarize'].includes(stage)
 }
 
 function requiresCapability(routeDecision: EngineeringAgentRouteDecision | undefined, capability: EngineeringAgentRouteCapability): boolean {

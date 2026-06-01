@@ -21,6 +21,7 @@ describe('EngineeringExecutionPipeline router decisions', () => {
     expect(calls.diff).toBe(0)
     expect(calls.verify).toBe(0)
     expect(calls.review).toBe(0)
+    expect(calls.skippedStages).toEqual(['snapshot', 'execute', 'diff', 'verify', 'review'])
   })
 
   it('runs diff and review for review routes without executing the agent', async () => {
@@ -81,6 +82,11 @@ function createInput(userRequest: string): EngineeringRunInput {
 
 function createPipeline(calls: ReturnType<typeof createCallTracker>): EngineeringExecutionPipeline {
   const deps: EngineeringExecutionPipelineDeps = {
+    onEvent: (event) => {
+      if (event.type === 'stage_skipped') {
+        calls.skippedStages.push(event.stage)
+      }
+    },
     createSnapshot: async () => {
       calls.snapshot += 1
       return { versionId: 'snapshot-1' }
@@ -158,5 +164,6 @@ function createCallTracker() {
     diff: 0,
     verify: 0,
     review: 0,
+    skippedStages: [] as string[],
   }
 }

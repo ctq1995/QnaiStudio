@@ -22,16 +22,33 @@ describe('transcript timeline route decisions', () => {
             reason: 'explicit review request',
           },
         },
+        {
+          id: 'skip-1',
+          sequence: 2,
+          type: 'stage_skipped',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          createdAt: '2026-01-01T00:00:01.000Z',
+          payload: {
+            stage: 'execute',
+            reason: 'Skipped by route=review: explicit review request',
+          },
+        },
       ],
     }
 
     const timeline = buildEngineeringTranscriptTimeline(snapshot)
 
-    expect(timeline.items).toHaveLength(1)
+    expect(timeline.items).toHaveLength(2)
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
       summary: 'route=review risk=low permission=plan skipped=snapshot,execute,verify',
+    }))
+    expect(timeline.items[1]).toEqual(expect.objectContaining({
+      kind: 'skipped',
+      title: 'Stage skipped',
+      summary: 'stage=execute reason=Skipped by route=review: explicit review request',
     }))
   })
 })

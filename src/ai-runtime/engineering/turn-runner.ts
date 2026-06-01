@@ -1,7 +1,7 @@
 import { routeEngineeringAgentTask, type EngineeringAgentRouteDecision } from './agent-router'
 import { EngineeringExecutionPipeline } from './execution-pipeline'
 import type { EngineeringExecutionPipelineDeps } from './execution-pipeline'
-import type { EngineeringRunInput, EngineeringRunSummary } from './types'
+import type { EngineeringRunInput, EngineeringRunSummary, EngineeringStage } from './types'
 
 export type EngineeringAgentSessionStatus = 'idle' | 'running' | 'failed' | 'aborted'
 
@@ -22,6 +22,7 @@ export interface EngineeringTurnResult {
 export type EngineeringTurnEvent =
   | { type: 'turn_started'; sessionId: string; turnId: string }
   | { type: 'route_decided'; sessionId: string; turnId: string; route: EngineeringAgentRouteDecision['route']; riskLevel: EngineeringAgentRouteDecision['riskLevel']; permissionMode: EngineeringAgentRouteDecision['permissionMode']; requiredCapabilities: EngineeringAgentRouteDecision['requiredCapabilities']; skippedStages: EngineeringAgentRouteDecision['skippedStages']; reason: string }
+  | { type: 'stage_skipped'; sessionId: string; turnId: string; stage: EngineeringStage; reason: string }
   | { type: 'turn_completed'; sessionId: string; turnId: string; success: boolean }
   | { type: 'turn_failed'; sessionId: string; turnId: string; error: string }
 
@@ -56,6 +57,7 @@ export class EngineeringTurnRunner {
       skippedStages: routeDecision.skippedStages,
       reason: routeDecision.reason,
     })
+    this.emitSkippedStages(input.sessionId, turnId, routeDecision)
 
     try {
       const summary = await this.deps.pipeline.run({ ...input, taskId: input.taskId || turnId, routeDecision }, { routeDecision })
@@ -80,6 +82,20 @@ export class EngineeringTurnRunner {
     }
   }
 
+  private emitSkippedStages(sessionId: string, turnId: string, routeDecision: EngineeringAgentRouteDecision): void {
+    for (const stage of routeDecision.skippedStages) {
+      if (isEngineeringStage(stage)) {
+        this.emit({
+          type: 'stage_skipped',
+          sessionId,
+          turnId,
+          stage,
+          reason: `Skipped by route=${routeDecision.route}: ${routeDecision.reason}`,
+        })
+      }
+    }
+  }
+
   private emit(event: EngineeringTurnEvent): void {
     this.deps.onTurnEvent?.(event)
   }
@@ -97,6 +113,10 @@ export function createEngineeringTurnRunnerDepsFromPipelineDeps(
 
 export function createDefaultTurnId(): string {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function isEngineeringStage(stage: string): stage is EngineeringStage {
+  return ['classify', 'context', 'snapshot', 'execute', 'diff', 'verify', 'review', 'summarize'].includes(stage)
 }
 
 function stringifyError(error: unknown): string {

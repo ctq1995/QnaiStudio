@@ -8,6 +8,7 @@ export type EngineeringTranscriptTimelineItemKind =
   | 'verification'
   | 'review'
   | 'route'
+  | 'skipped'
   | 'policy'
   | 'note'
   | 'event'
@@ -99,6 +100,7 @@ function mapTimelineKind(type: EngineeringTranscriptEventType): EngineeringTrans
   if (type === 'verification_result') return 'verification'
   if (type === 'review_result') return 'review'
   if (type === 'route_decision') return 'route'
+  if (type === 'stage_skipped') return 'skipped'
   if (type === 'note') return 'note'
   return 'event'
 }
@@ -121,6 +123,8 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
       return 'Tool result'
     case 'route_decision':
       return 'Route decided'
+    case 'stage_skipped':
+      return 'Stage skipped'
     case 'permission_decision':
       return 'Permission decision'
     case 'verification_result':
@@ -141,8 +145,20 @@ function createTimelineSummary(event: EngineeringTranscriptEvent): string | unde
       return `route=${payload.route} risk=${payload.riskLevel} permission=${payload.permissionMode} skipped=${payload.skippedStages.join(',') || 'none'}`
     }
   }
+  if (event.type === 'stage_skipped') {
+    const payload = event.payload
+    if (isStageSkippedPayload(payload)) {
+      return `stage=${payload.stage} reason=${payload.reason}`
+    }
+  }
   const parts = [event.sessionId && `session=${event.sessionId}`, event.turnId && `turn=${event.turnId}`, event.taskId && `task=${event.taskId}`].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : undefined
+}
+
+function isStageSkippedPayload(payload: unknown): payload is { stage: string; reason: string } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { stage?: unknown; reason?: unknown }
+  return typeof candidate.stage === 'string' && typeof candidate.reason === 'string'
 }
 
 function isRouteDecisionPayload(payload: unknown): payload is { route: string; riskLevel: string; permissionMode: string; skippedStages: string[] } {

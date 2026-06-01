@@ -27,7 +27,7 @@ describe('EngineeringExecutionPipeline router decisions', () => {
   it('runs diff and review for review routes without executing the agent', async () => {
     const calls = createCallTracker()
     const pipeline = createPipeline(calls)
-    const input = createInput('review the current diff for bugs')
+    const input = createInput('security review auth flow')
 
     const summary = await pipeline.run(input, { routeDecision: routeEngineeringAgentTask(input) })
 
@@ -35,14 +35,14 @@ describe('EngineeringExecutionPipeline router decisions', () => {
     expect(calls.snapshot).toBe(0)
     expect(calls.execute).toBe(0)
     expect(calls.diff).toBe(1)
-    expect(calls.verify).toBe(0)
     expect(calls.review).toBe(1)
+    expect(calls.reviewPrompts[0]).toContain('security focus')
   })
 
   it('runs diff and verification for verify routes without executing the agent', async () => {
     const calls = createCallTracker()
     const pipeline = createPipeline(calls)
-    const input = createInput('verify the frontend build')
+    const input = createInput('run lint')
     const routeDecision = routeEngineeringAgentTask(input)
 
     const summary = await pipeline.run(input, { routeDecision })
@@ -54,6 +54,7 @@ describe('EngineeringExecutionPipeline router decisions', () => {
     expect(calls.verify).toBe(1)
     expect(calls.review).toBe(0)
     expect(summary.verificationResults).toHaveLength(1)
+    expect(calls.verificationCommandIds).toEqual(['npm-lint'])
   })
 
   it('runs the full pipeline for execute routes', async () => {
@@ -101,10 +102,12 @@ function createPipeline(calls: ReturnType<typeof createCallTracker>): Engineerin
     },
     runVerification: async (commands) => {
       calls.verify += 1
+      calls.verificationCommandIds.push(...commands.map((command) => command.id))
       return commands.map(createVerificationResult)
     },
-    runReview: async (): Promise<ReviewResult> => {
+    runReview: async (prompt): Promise<ReviewResult> => {
       calls.review += 1
+      calls.reviewPrompts.push(prompt)
       return { success: true, content: 'review ok' }
     },
     contextRuntime: {
@@ -147,10 +150,10 @@ function createContext(): EngineeringContext {
       hasTauri: false,
       packageManager: 'npm',
       buildTools: ['vite'],
-      scripts: { build: 'vite build' },
+      scripts: { build: 'vite build', test: 'vitest run', lint: 'eslint .', typecheck: 'tsc --noEmit' },
       fingerprint: buildProjectFingerprint({
         files: ['package.json', 'src/App.tsx'],
-        packageScripts: { build: 'vite build' },
+        packageScripts: { build: 'vite build', test: 'vitest run', lint: 'eslint .', typecheck: 'tsc --noEmit' },
       }),
     },
     summary: 'context summary',
@@ -164,6 +167,8 @@ function createCallTracker() {
     diff: 0,
     verify: 0,
     review: 0,
+    verificationCommandIds: [] as string[],
+    reviewPrompts: [] as string[],
     skippedStages: [] as string[],
   }
 }

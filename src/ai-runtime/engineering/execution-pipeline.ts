@@ -5,11 +5,11 @@ import type { EngineeringContextBuilderDeps } from './context-builder'
 import { emitEngineeringEvent } from './events'
 import { classifyEngineeringTask } from './task-classifier'
 import { decideEngineeringPermission } from './permission-policy'
-import { buildEngineeringReviewPrompt, shouldRunReview } from './review-policy'
+import { buildEngineeringReviewPromptForSubtype, shouldRunReview } from './review-policy'
 import { resolveEngineeringRunMode } from './run-mode-policy'
 import { createSnapshotLabel, shouldCreateSnapshot } from './snapshot-policy'
 import { buildEngineeringFinalMessage } from './summary-builder'
-import { extractChangedFilesFromDiff, selectVerificationCommands } from './verification-policy'
+import { extractChangedFilesFromDiff, selectVerificationCommandsForSubtype } from './verification-policy'
 import type {
   EngineeringAgentRequest,
   EngineeringAgentResult,
@@ -147,7 +147,7 @@ export class EngineeringExecutionPipeline {
     const changedFiles = diff ? extractChangedFilesFromDiff(diff) : []
     const shouldRunVerification = requiresCapability(options.routeDecision, 'verification')
     const selectedCommands = shouldRunVerification && (classification.requiresVerification || Boolean(options.routeDecision))
-      ? selectVerificationCommands(changedFiles, context.projectSignals.scripts)
+      ? selectVerificationCommandsForSubtype(options.routeDecision?.subtype, changedFiles, context.projectSignals.scripts)
       : []
     const commands: VerificationCommand[] = []
     let verificationResults: VerificationResult[] = []
@@ -215,7 +215,7 @@ export class EngineeringExecutionPipeline {
     if (!diffError && shouldRunReviewStage && shouldRunReview(diff)) {
       emitEngineeringEvent(this.deps.onEvent, { type: 'stage_started', taskId, stage: 'review' })
       try {
-        review = await this.deps.runReview(buildEngineeringReviewPrompt(diff), diff, input.workspaceDir)
+        review = await this.deps.runReview(buildEngineeringReviewPromptForSubtype(options.routeDecision?.subtype, diff), diff, input.workspaceDir)
         emitEngineeringEvent(this.deps.onEvent, { type: 'review_completed', taskId, success: review.success, skipped: review.skipped })
         emitEngineeringEvent(this.deps.onEvent, { type: 'stage_completed', taskId, stage: 'review' })
       } catch (error) {

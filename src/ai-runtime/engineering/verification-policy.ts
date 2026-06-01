@@ -1,3 +1,4 @@
+import type { EngineeringAgentRouteSubtype } from './agent-router'
 import type { VerificationCommand } from './types'
 
 export const FRONTEND_BUILD_COMMAND: VerificationCommand = {
@@ -58,6 +59,24 @@ export function selectVerificationCommands(
   }
 
   if (touchesTauri) commands.push(TAURI_CHECK_COMMAND)
+
+  return mergeVerificationCommands(commands)
+}
+
+export function selectVerificationCommandsForSubtype(
+  subtype: EngineeringAgentRouteSubtype | undefined,
+  changedFiles: string[],
+  packageScripts: Record<string, string> = {}
+): VerificationCommand[] {
+  if (!subtype || !subtype.startsWith('verify.')) {
+    return selectVerificationCommands(changedFiles, packageScripts)
+  }
+
+  const commands: VerificationCommand[] = []
+  if (subtype === 'verify.typecheck') pushScriptCommand(commands, packageScripts, 'typecheck', 'Frontend typecheck')
+  if (subtype === 'verify.lint') pushScriptCommand(commands, packageScripts, 'lint', 'Frontend lint')
+  if (subtype === 'verify.test') pushScriptCommand(commands, packageScripts, 'test', 'Frontend tests')
+  if (subtype === 'verify.build') pushScriptCommand(commands, packageScripts, 'build', 'Frontend build', FRONTEND_BUILD_COMMAND)
 
   return mergeVerificationCommands(commands)
 }

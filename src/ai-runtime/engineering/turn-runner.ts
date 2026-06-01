@@ -20,13 +20,13 @@ export interface EngineeringTurnResult {
 }
 
 export type EngineeringTurnEvent =
-  | { type: 'turn_started'; sessionId: string; turnId: string }
-  | { type: 'route_decided'; sessionId: string; turnId: string; route: EngineeringAgentRouteDecision['route']; subtype?: EngineeringAgentRouteDecision['subtype']; riskLevel: EngineeringAgentRouteDecision['riskLevel']; permissionMode: EngineeringAgentRouteDecision['permissionMode']; requiredCapabilities: EngineeringAgentRouteDecision['requiredCapabilities']; skippedStages: EngineeringAgentRouteDecision['skippedStages']; reason: string }
-  | { type: 'stage_skipped'; sessionId: string; turnId: string; stage: EngineeringStage; reason: string }
+  | { type: 'turn_started'; sessionId: string; turnId: string; taskId: string }
+  | { type: 'route_decided'; sessionId: string; turnId: string; taskId: string; route: EngineeringAgentRouteDecision['route']; subtype?: EngineeringAgentRouteDecision['subtype']; riskLevel: EngineeringAgentRouteDecision['riskLevel']; permissionMode: EngineeringAgentRouteDecision['permissionMode']; requiredCapabilities: EngineeringAgentRouteDecision['requiredCapabilities']; skippedStages: EngineeringAgentRouteDecision['skippedStages']; reason: string }
+  | { type: 'stage_skipped'; sessionId: string; turnId: string; taskId: string; stage: EngineeringStage; reason: string }
   | { type: 'verification_strategy_selected'; sessionId: string; turnId: string; taskId: string; subtype?: string; commandIds: string[]; commandLabels: string[]; reason: string }
   | { type: 'review_strategy_selected'; sessionId: string; turnId: string; taskId: string; subtype?: string; focus: string; reason: string }
-  | { type: 'turn_completed'; sessionId: string; turnId: string; success: boolean }
-  | { type: 'turn_failed'; sessionId: string; turnId: string; error: string }
+  | { type: 'turn_completed'; sessionId: string; turnId: string; taskId: string; success: boolean }
+  | { type: 'turn_failed'; sessionId: string; turnId: string; taskId: string; error: string }
 
 export type EngineeringTurnEventHandler = (event: EngineeringTurnEvent) => void
 
@@ -45,13 +45,15 @@ export class EngineeringTurnRunner {
 
   async run(input: EngineeringTurnInput): Promise<EngineeringTurnResult> {
     const turnId = input.turnId || this.deps.createTurnId?.() || createDefaultTurnId()
-    this.emit({ type: 'turn_started', sessionId: input.sessionId, turnId })
+    const taskId = input.taskId || turnId
+    this.emit({ type: 'turn_started', sessionId: input.sessionId, turnId, taskId })
 
     const routeDecision = input.routeDecision || routeEngineeringAgentTask(input)
     this.emit({
       type: 'route_decided',
       sessionId: input.sessionId,
       turnId,
+      taskId,
       route: routeDecision.route,
       subtype: routeDecision.subtype,
       riskLevel: routeDecision.riskLevel,
@@ -60,11 +62,11 @@ export class EngineeringTurnRunner {
       skippedStages: routeDecision.skippedStages,
       reason: routeDecision.reason,
     })
-    this.emitSkippedStages(input.sessionId, turnId, routeDecision)
+    this.emitSkippedStages(input.sessionId, turnId, taskId, routeDecision)
 
     try {
       const summary = await this.deps.pipeline.run(
-        { ...input, taskId: input.taskId || turnId, routeDecision },
+        { ...input, taskId, routeDecision },
         { routeDecision, onEvent: (event) => this.forwardRunEvent(input.sessionId, turnId, event) },
       )
       const result: EngineeringTurnResult = {
@@ -75,15 +77,15 @@ export class EngineeringTurnRunner {
         error: summary.success ? undefined : summary.finalMessage,
       }
       if (!summary.success) {
-        this.emit({ type: 'turn_failed', sessionId: input.sessionId, turnId, error: summary.finalMessage })
+        this.emit({ type: 'turn_failed', sessionId: input.sessionId, turnId, taskId, error: summary.finalMessage })
         return result
       }
 
-      this.emit({ type: 'turn_completed', sessionId: input.sessionId, turnId, success: true })
+      this.emit({ type: 'turn_completed', sessionId: input.sessionId, turnId, taskId, success: true })
       return result
     } catch (error) {
       const message = stringifyError(error)
-      this.emit({ type: 'turn_failed', sessionId: input.sessionId, turnId, error: message })
+      this.emit({ type: 'turn_failed', sessionId: input.sessionId, turnId, taskId, error: message })
       throw error
     }
   }
@@ -115,13 +117,14 @@ export class EngineeringTurnRunner {
     }
   }
 
-  private emitSkippedStages(sessionId: string, turnId: string, routeDecision: EngineeringAgentRouteDecision): void {
+  private emitSkippedStages(sessionId: string, turnId: string, taskId: string, routeDecision: EngineeringAgentRouteDecision): void {
     for (const stage of routeDecision.skippedStages) {
       if (isEngineeringStage(stage)) {
         this.emit({
           type: 'stage_skipped',
           sessionId,
           turnId,
+          taskId,
           stage,
           reason: `Skipped by route=${routeDecision.route}: ${routeDecision.reason}`,
         })

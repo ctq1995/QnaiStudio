@@ -10,6 +10,7 @@ export type EngineeringTranscriptTimelineItemKind =
   | 'route'
   | 'skipped'
   | 'strategy'
+  | 'control'
   | 'policy'
   | 'note'
   | 'event'
@@ -103,6 +104,7 @@ function mapTimelineKind(type: EngineeringTranscriptEventType): EngineeringTrans
   if (type === 'route_decision') return 'route'
   if (type === 'stage_skipped') return 'skipped'
   if (type === 'verification_strategy' || type === 'review_strategy') return 'strategy'
+  if (type === 'task_control_requested' || type === 'task_control_dispatched') return 'control'
   if (type === 'note') return 'note'
   return 'event'
 }
@@ -131,6 +133,10 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
       return 'Verification strategy selected'
     case 'review_strategy':
       return 'Review strategy selected'
+    case 'task_control_requested':
+      return 'Task control requested'
+    case 'task_control_dispatched':
+      return 'Task control dispatched'
     case 'permission_decision':
       return 'Permission decision'
     case 'verification_result':
@@ -172,6 +178,18 @@ function createTimelineSummary(event: EngineeringTranscriptEvent): string | unde
       return `review${subtypePart} focus=${payload.focus}`
     }
   }
+  if (event.type === 'task_control_requested') {
+    const payload = event.payload
+    if (isTaskControlRequestedPayload(payload)) {
+      return `action=${payload.action} requestedAt=${payload.requestedAt}`
+    }
+  }
+  if (event.type === 'task_control_dispatched') {
+    const payload = event.payload
+    if (isTaskControlDispatchedPayload(payload)) {
+      return `action=${payload.action} status=${payload.status} reason=${payload.reason}`
+    }
+  }
   const parts = [event.sessionId && `session=${event.sessionId}`, event.turnId && `turn=${event.turnId}`, event.taskId && `task=${event.taskId}`].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : undefined
 }
@@ -186,6 +204,18 @@ function isReviewStrategyPayload(payload: unknown): payload is { subtype?: strin
   if (!payload || typeof payload !== 'object') return false
   const candidate = payload as { focus?: unknown }
   return typeof candidate.focus === 'string'
+}
+
+function isTaskControlRequestedPayload(payload: unknown): payload is { action: string; requestedAt: string } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { action?: unknown; requestedAt?: unknown }
+  return typeof candidate.action === 'string' && typeof candidate.requestedAt === 'string'
+}
+
+function isTaskControlDispatchedPayload(payload: unknown): payload is { action: string; status: string; reason: string } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { action?: unknown; status?: unknown; reason?: unknown }
+  return typeof candidate.action === 'string' && typeof candidate.status === 'string' && typeof candidate.reason === 'string'
 }
 
 function isStageSkippedPayload(payload: unknown): payload is { stage: string; reason: string } {

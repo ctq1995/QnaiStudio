@@ -66,11 +66,16 @@ describe('engineeringTaskStateStore', () => {
       status: 'accepted',
       reason: 'noop_control_handler',
     }));
+    expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([
+      expect.objectContaining({ type: 'task_control_requested', taskId: 'task-1', action: 'cancel' }),
+      expect.objectContaining({ type: 'task_control_dispatched', taskId: 'task-1', action: 'cancel', status: 'accepted' }),
+    ]);
 
     useEngineeringTaskStateStore.getState().clear();
 
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().lastActionResult).toBeUndefined();
+    expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([]);
   });
 
   it('clears store state and handles missing snapshot taskStates', () => {

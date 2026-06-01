@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { EngineeringTaskState } from '../ai-runtime/engineering';
 import { engineeringTaskStateService, filterTaskStates, type EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
-import { dispatchEngineeringTaskControlAction, type EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+import { dispatchEngineeringTaskControlActionWithAudit, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
 
 type EngineeringTaskStateSnapshot = { taskStates?: EngineeringTaskState[] };
 
@@ -19,6 +19,7 @@ interface EngineeringTaskStateStore {
   filter: EngineeringTaskStateFilter;
   lastActionRequest?: EngineeringTaskCenterActionRequest;
   lastActionResult?: EngineeringTaskControlDispatchResult;
+  lastControlAuditEvents: EngineeringTaskControlAuditEvent[];
   setTaskStates: (states: EngineeringTaskState[]) => void;
   upsertTaskState: (state: EngineeringTaskState) => void;
   syncFromRuntimeSnapshot: (snapshot: EngineeringTaskStateSnapshot) => void;
@@ -34,6 +35,7 @@ interface EngineeringTaskStateStore {
 export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((set, get) => ({
   taskStates: [],
   filter: {},
+  lastControlAuditEvents: [],
 
   setTaskStates: (states) => {
     engineeringTaskStateService.setTaskStates(states);
@@ -67,9 +69,11 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
       action,
       requestedAt: new Date().toISOString(),
     };
+    const dispatch = dispatchEngineeringTaskControlActionWithAudit(request);
     set({
       lastActionRequest: request,
-      lastActionResult: dispatchEngineeringTaskControlAction(request),
+      lastActionResult: dispatch.result,
+      lastControlAuditEvents: dispatch.events,
     });
   },
 
@@ -83,7 +87,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [] });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),
@@ -93,4 +97,4 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
 export { engineeringTaskStateService } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
-export type { EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+export type { EngineeringTaskControlAuditEvent, EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';

@@ -17,6 +17,8 @@ export type EngineeringTranscriptEventType =
   | 'stage_skipped'
   | 'verification_strategy'
   | 'review_strategy'
+  | 'task_control_requested'
+  | 'task_control_dispatched'
   | 'note'
 
 export interface EngineeringTranscriptEvent<TPayload = unknown> {

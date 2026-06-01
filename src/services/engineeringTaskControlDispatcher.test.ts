@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dispatchEngineeringTaskControlAction } from './engineeringTaskControlDispatcher';
+import { dispatchEngineeringTaskControlAction, dispatchEngineeringTaskControlActionWithAudit } from './engineeringTaskControlDispatcher';
 
 const requestedAt = '2026-06-01T00:00:00.000Z';
 
@@ -28,14 +28,31 @@ describe('dispatchEngineeringTaskControlAction', () => {
     }));
   });
 
-  it('rejects missing task id', () => {
-    const result = dispatchEngineeringTaskControlAction({ taskId: '   ', action: 'pause', requestedAt });
+  it('returns requested and dispatched audit events', () => {
+    const dispatch = dispatchEngineeringTaskControlActionWithAudit({ taskId: 'task-1', action: 'cancel', requestedAt });
 
-    expect(result).toEqual(expect.objectContaining({
-      taskId: '   ',
-      action: 'pause',
-      status: 'rejected',
-      reason: 'missing_task_id',
+    expect(dispatch.result).toEqual(expect.objectContaining({
+      taskId: 'task-1',
+      action: 'cancel',
+      status: 'accepted',
+      reason: 'noop_control_handler',
     }));
+    expect(dispatch.events).toEqual([
+      {
+        type: 'task_control_requested',
+        taskId: 'task-1',
+        action: 'cancel',
+        requestedAt,
+      },
+      expect.objectContaining({
+        type: 'task_control_dispatched',
+        taskId: 'task-1',
+        action: 'cancel',
+        status: 'accepted',
+        reason: 'noop_control_handler',
+        requestedAt,
+        handledAt: expect.any(String),
+      }),
+    ]);
   });
 });

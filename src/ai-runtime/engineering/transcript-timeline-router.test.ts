@@ -64,12 +64,43 @@ describe('transcript timeline route decisions', () => {
             reason: 'Selected by subtype=review.security',
           },
         },
+        {
+          id: 'control-requested-1',
+          sequence: 5,
+          type: 'task_control_requested',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:04.000Z',
+          payload: {
+            taskId: 'task-1',
+            action: 'cancel',
+            requestedAt: '2026-01-01T00:00:04.000Z',
+          },
+        },
+        {
+          id: 'control-dispatched-1',
+          sequence: 6,
+          type: 'task_control_dispatched',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:05.000Z',
+          payload: {
+            taskId: 'task-1',
+            action: 'cancel',
+            status: 'accepted',
+            reason: 'noop_control_handler',
+            requestedAt: '2026-01-01T00:00:04.000Z',
+            handledAt: '2026-01-01T00:00:05.000Z',
+          },
+        },
       ],
     }
 
     const timeline = buildEngineeringTranscriptTimeline(snapshot)
 
-    expect(timeline.items).toHaveLength(4)
+    expect(timeline.items).toHaveLength(6)
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
@@ -85,10 +116,15 @@ describe('transcript timeline route decisions', () => {
       title: 'Verification strategy selected',
       summary: 'verification subtype=verify.lint commands=npm-lint',
     }))
-    expect(timeline.items[3]).toEqual(expect.objectContaining({
-      kind: 'strategy',
-      title: 'Review strategy selected',
-      summary: 'review subtype=review.security focus=security',
+    expect(timeline.items[4]).toEqual(expect.objectContaining({
+      kind: 'control',
+      title: 'Task control requested',
+      summary: 'action=cancel requestedAt=2026-01-01T00:00:04.000Z',
+    }))
+    expect(timeline.items[5]).toEqual(expect.objectContaining({
+      kind: 'control',
+      title: 'Task control dispatched',
+      summary: 'action=cancel status=accepted reason=noop_control_handler',
     }))
   })
 })

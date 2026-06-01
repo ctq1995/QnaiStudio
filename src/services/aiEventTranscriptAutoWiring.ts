@@ -53,7 +53,8 @@ function mapAIEventToTranscriptInput(event: AIEvent, input: AIEventTranscriptAut
 function applyPayloadPolicy(event: AIEvent, input: AIEventTranscriptAutoWiringInput): unknown {
   const payload = input.mapPayload ? input.mapPayload(event) : event
   const policy = input.payloadPolicy || createTranscriptPayloadPolicy()
-  return policy(payload)
+  const result = policy(payload)
+  return result.actions.length > 0 ? { payload: result.payload, policy: { actions: result.actions } } : result.payload
 }
 
 function readEventTimestamp(event: AIEvent): number {

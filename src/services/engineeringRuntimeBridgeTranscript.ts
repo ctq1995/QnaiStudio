@@ -20,9 +20,10 @@ export function registerEngineeringRuntimeBridgeTranscript(input: EngineeringRun
     const recordInput = mapBridgeEventToTranscriptInput(event)
     const payload = input.mapPayload ? input.mapPayload(event) : recordInput.payload
     const policy = input.payloadPolicy || createTranscriptPayloadPolicy()
+    const result = policy(payload)
     void input.recorder.record({
       ...recordInput,
-      payload: policy(payload),
+      payload: result.actions.length > 0 ? { payload: result.payload, policy: { actions: result.actions } } : result.payload,
     }).catch((error) => {
       input.onError?.(error)
     })

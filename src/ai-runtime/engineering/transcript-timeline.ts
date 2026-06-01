@@ -104,7 +104,7 @@ function mapTimelineKind(type: EngineeringTranscriptEventType): EngineeringTrans
   if (type === 'route_decision') return 'route'
   if (type === 'stage_skipped') return 'skipped'
   if (type === 'verification_strategy' || type === 'review_strategy') return 'strategy'
-  if (type === 'task_control_requested' || type === 'task_control_dispatched') return 'control'
+  if (type === 'task_control_requested' || type === 'task_control_dispatched' || type === 'task_control_runtime_ack') return 'control'
   if (type === 'note') return 'note'
   return 'event'
 }
@@ -137,6 +137,8 @@ function createTimelineTitle(event: EngineeringTranscriptEvent): string {
       return 'Task control requested'
     case 'task_control_dispatched':
       return 'Task control dispatched'
+    case 'task_control_runtime_ack':
+      return 'Task control runtime ack'
     case 'permission_decision':
       return 'Permission decision'
     case 'verification_result':
@@ -190,6 +192,12 @@ function createTimelineSummary(event: EngineeringTranscriptEvent): string | unde
       return `action=${payload.action} status=${payload.status} reason=${payload.reason}`
     }
   }
+  if (event.type === 'task_control_runtime_ack') {
+    const payload = event.payload
+    if (isTaskControlRuntimeAckPayload(payload)) {
+      return `action=${payload.action} status=${payload.status} reason=${payload.reason}`
+    }
+  }
   const parts = [event.sessionId && `session=${event.sessionId}`, event.turnId && `turn=${event.turnId}`, event.taskId && `task=${event.taskId}`].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : undefined
 }
@@ -222,6 +230,12 @@ function isStageSkippedPayload(payload: unknown): payload is { stage: string; re
   if (!payload || typeof payload !== 'object') return false
   const candidate = payload as { stage?: unknown; reason?: unknown }
   return typeof candidate.stage === 'string' && typeof candidate.reason === 'string'
+}
+
+function isTaskControlRuntimeAckPayload(payload: unknown): payload is { action: string; status: string; reason: string } {
+  if (!payload || typeof payload !== 'object') return false
+  const candidate = payload as { action?: unknown; status?: unknown; reason?: unknown }
+  return typeof candidate.action === 'string' && typeof candidate.status === 'string' && typeof candidate.reason === 'string'
 }
 
 function isRouteDecisionPayload(payload: unknown): payload is { route: string; subtype?: string; riskLevel: string; permissionMode: string; skippedStages: string[] } {

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { EngineeringTaskState } from '../ai-runtime/engineering';
 import { engineeringTaskStateService, filterTaskStates, type EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
 import { dispatchEngineeringTaskControlActionWithAudit, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+import { createNoopEngineeringTaskControlRuntimeBridge, isRuntimeAction, type EngineeringTaskControlRuntimeAckEvent, type EngineeringTaskControlRuntimeBridge } from '../services/engineeringTaskControlRuntimeBridge';
 import type { EngineeringTaskControlTranscriptBridge } from '../services/engineeringTaskControlTranscriptBridge';
 
 type EngineeringTaskStateSnapshot = { taskStates?: EngineeringTaskState[] };
@@ -14,21 +15,26 @@ export interface EngineeringTaskCenterActionRequest {
   requestedAt: string;
 }
 
+type EngineeringTaskControlStoreAuditEvent = EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
+
 interface EngineeringTaskStateStore {
   taskStates: EngineeringTaskState[];
   activeTaskId?: string;
   filter: EngineeringTaskStateFilter;
   lastActionRequest?: EngineeringTaskCenterActionRequest;
   lastActionResult?: EngineeringTaskControlDispatchResult;
-  lastControlAuditEvents: EngineeringTaskControlAuditEvent[];
+  lastControlAuditEvents: EngineeringTaskControlStoreAuditEvent[];
   lastControlTranscriptError?: string;
+  lastControlRuntimeError?: string;
   controlTranscriptBridge?: EngineeringTaskControlTranscriptBridge;
+  controlRuntimeBridge?: EngineeringTaskControlRuntimeBridge;
   setTaskStates: (states: EngineeringTaskState[]) => void;
   upsertTaskState: (state: EngineeringTaskState) => void;
   syncFromRuntimeSnapshot: (snapshot: EngineeringTaskStateSnapshot) => void;
   requestTaskAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
   dispatchTaskAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
   setControlTranscriptBridge: (bridge?: EngineeringTaskControlTranscriptBridge) => void;
+  setControlRuntimeBridge: (bridge?: EngineeringTaskControlRuntimeBridge) => void;
   setFilter: (filter: EngineeringTaskStateFilter) => void;
   selectTask: (taskId: string) => void;
   clear: () => void;
@@ -40,6 +46,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
   taskStates: [],
   filter: {},
   lastControlAuditEvents: [],
+  controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge(),
 
   setTaskStates: (states) => {
     engineeringTaskStateService.setTaskStates(states);
@@ -79,12 +86,17 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
       lastActionResult: dispatch.result,
       lastControlAuditEvents: dispatch.events,
       lastControlTranscriptError: undefined,
+      lastControlRuntimeError: undefined,
     });
-    recordControlAuditEvents(get().controlTranscriptBridge, dispatch.events, set);
+    void acknowledgeRuntimeControl(get().controlRuntimeBridge, request, dispatch.events, get, set);
   },
 
   setControlTranscriptBridge: (bridge) => {
     set({ controlTranscriptBridge: bridge, lastControlTranscriptError: undefined });
+  },
+
+  setControlRuntimeBridge: (bridge) => {
+    set({ controlRuntimeBridge: bridge, lastControlRuntimeError: undefined });
   },
 
   setFilter: (filter) => {
@@ -97,7 +109,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlTranscriptError: undefined, controlTranscriptBridge: undefined });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlTranscriptError: undefined, lastControlRuntimeError: undefined, controlTranscriptBridge: undefined, controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge() });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),
@@ -107,13 +119,39 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
 function recordControlAuditEvents(
   bridge: EngineeringTaskControlTranscriptBridge | undefined,
-  events: EngineeringTaskControlAuditEvent[],
+  events: EngineeringTaskControlStoreAuditEvent[],
   set: (state: Partial<EngineeringTaskStateStore>) => void,
 ): void {
   if (!bridge) return;
   bridge.record(events).catch((error: unknown) => {
     set({ lastControlTranscriptError: stringifyError(error) });
   });
+}
+
+async function acknowledgeRuntimeControl(
+  bridge: EngineeringTaskControlRuntimeBridge | undefined,
+  request: EngineeringTaskCenterActionRequest,
+  events: EngineeringTaskControlAuditEvent[],
+  get: () => EngineeringTaskStateStore,
+  set: (state: Partial<EngineeringTaskStateStore>) => void,
+): Promise<void> {
+  if (!bridge || !isRuntimeAction(request.action)) {
+    recordControlAuditEvents(get().controlTranscriptBridge, events, set);
+    return;
+  }
+
+  try {
+    const ack = await bridge.acknowledge(request);
+    const nextEvents: EngineeringTaskControlStoreAuditEvent[] = ack ? [...events, ack] : events;
+    set({
+      lastControlAuditEvents: nextEvents,
+      lastControlRuntimeError: undefined,
+    });
+    recordControlAuditEvents(get().controlTranscriptBridge, nextEvents, set);
+  } catch (error: unknown) {
+    set({ lastControlRuntimeError: stringifyError(error) });
+    recordControlAuditEvents(get().controlTranscriptBridge, events, set);
+  }
 }
 
 function stringifyError(error: unknown): string {
@@ -125,3 +163,4 @@ function stringifyError(error: unknown): string {
 export { engineeringTaskStateService } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskControlAuditEvent, EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+export type { EngineeringTaskControlRuntimeAckEvent, EngineeringTaskControlRuntimeBridge } from '../services/engineeringTaskControlRuntimeBridge';

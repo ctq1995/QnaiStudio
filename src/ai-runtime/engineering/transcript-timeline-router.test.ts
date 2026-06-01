@@ -95,12 +95,29 @@ describe('transcript timeline route decisions', () => {
             handledAt: '2026-01-01T00:00:05.000Z',
           },
         },
+        {
+          id: 'control-runtime-ack-1',
+          sequence: 7,
+          type: 'task_control_runtime_ack',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:06.000Z',
+          payload: {
+            taskId: 'task-1',
+            action: 'cancel',
+            status: 'acknowledged',
+            reason: 'noop_runtime_handler',
+            requestedAt: '2026-01-01T00:00:04.000Z',
+            acknowledgedAt: '2026-01-01T00:00:06.000Z',
+          },
+        },
       ],
     }
 
     const timeline = buildEngineeringTranscriptTimeline(snapshot)
 
-    expect(timeline.items).toHaveLength(6)
+    expect(timeline.items).toHaveLength(7)
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
@@ -125,6 +142,11 @@ describe('transcript timeline route decisions', () => {
       kind: 'control',
       title: 'Task control dispatched',
       summary: 'action=cancel status=accepted reason=noop_control_handler',
+    }))
+    expect(timeline.items[6]).toEqual(expect.objectContaining({
+      kind: 'control',
+      title: 'Task control runtime ack',
+      summary: 'action=cancel status=acknowledged reason=noop_runtime_handler',
     }))
   })
 })

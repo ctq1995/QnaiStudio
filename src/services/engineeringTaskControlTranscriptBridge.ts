@@ -1,6 +1,9 @@
 import type { EngineeringTranscriptEvent } from '../ai-runtime/engineering/transcript-recorder';
 import type { EngineeringTranscriptRecorder } from '../ai-runtime/engineering/transcript-recorder';
 import type { EngineeringTaskControlAuditEvent } from './engineeringTaskControlDispatcher';
+import type { EngineeringTaskControlRuntimeAckEvent } from './engineeringTaskControlRuntimeBridge';
+
+export type EngineeringTaskControlTranscriptEvent = EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
 
 export interface EngineeringTaskControlTranscriptContext {
   sessionId?: string;
@@ -8,12 +11,12 @@ export interface EngineeringTaskControlTranscriptContext {
 }
 
 export interface EngineeringTaskControlTranscriptBridge {
-  record(events: EngineeringTaskControlAuditEvent[]): Promise<EngineeringTranscriptEvent[]>;
+  record(events: EngineeringTaskControlTranscriptEvent[]): Promise<EngineeringTranscriptEvent[]>;
 }
 
 export async function recordEngineeringTaskControlAuditEvents(
   recorder: EngineeringTranscriptRecorder,
-  events: EngineeringTaskControlAuditEvent[],
+  events: EngineeringTaskControlTranscriptEvent[],
   context: EngineeringTaskControlTranscriptContext = {},
 ): Promise<EngineeringTranscriptEvent[]> {
   const recorded: EngineeringTranscriptEvent[] = [];

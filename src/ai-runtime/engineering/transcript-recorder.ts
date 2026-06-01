@@ -19,6 +19,7 @@ export type EngineeringTranscriptEventType =
   | 'review_strategy'
   | 'task_control_requested'
   | 'task_control_dispatched'
+  | 'task_control_runtime_ack'
   | 'note'
 
 export interface EngineeringTranscriptEvent<TPayload = unknown> {

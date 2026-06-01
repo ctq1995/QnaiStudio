@@ -53,8 +53,10 @@ describe('engineeringTaskStateStore', () => {
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
   });
 
-  it('dispatches task actions and records dispatch results', () => {
+  it('dispatches task actions, records runtime acks, and stores dispatch results', async () => {
     useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toEqual(expect.objectContaining({
       taskId: 'task-1',
@@ -69,27 +71,15 @@ describe('engineeringTaskStateStore', () => {
     expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([
       expect.objectContaining({ type: 'task_control_requested', taskId: 'task-1', action: 'cancel' }),
       expect.objectContaining({ type: 'task_control_dispatched', taskId: 'task-1', action: 'cancel', status: 'accepted' }),
+      expect.objectContaining({ type: 'task_control_runtime_ack', taskId: 'task-1', action: 'cancel', status: 'acknowledged' }),
     ]);
+    expect(useEngineeringTaskStateStore.getState().lastControlRuntimeError).toBeUndefined();
 
     useEngineeringTaskStateStore.getState().clear();
 
     expect(useEngineeringTaskStateStore.getState().lastActionRequest).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().lastActionResult).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([]);
-  });
-
-  it('records control audit events through configured transcript bridge', async () => {
-    const record = vi.fn().mockResolvedValue([]);
-    useEngineeringTaskStateStore.getState().setControlTranscriptBridge({ record });
-
-    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
-    await Promise.resolve();
-
-    expect(record).toHaveBeenCalledWith([
-      expect.objectContaining({ type: 'task_control_requested', taskId: 'task-1', action: 'cancel' }),
-      expect.objectContaining({ type: 'task_control_dispatched', taskId: 'task-1', action: 'cancel', status: 'accepted' }),
-    ]);
-    expect(useEngineeringTaskStateStore.getState().lastControlTranscriptError).toBeUndefined();
   });
 
   it('records transcript bridge errors without blocking action dispatch', async () => {
@@ -102,6 +92,25 @@ describe('engineeringTaskStateStore', () => {
 
     expect(useEngineeringTaskStateStore.getState().lastActionResult).toEqual(expect.objectContaining({ status: 'accepted' }));
     expect(useEngineeringTaskStateStore.getState().lastControlTranscriptError).toBe('record failed');
+  });
+
+  it('records runtime bridge errors without blocking action dispatch', async () => {
+    useEngineeringTaskStateStore.getState().setControlRuntimeBridge({
+      acknowledge: async () => {
+        throw new Error('runtime failed');
+      },
+    });
+
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'cancel');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastActionResult).toEqual(expect.objectContaining({ status: 'accepted' }));
+    expect(useEngineeringTaskStateStore.getState().lastControlRuntimeError).toBe('runtime failed');
+    expect(useEngineeringTaskStateStore.getState().lastControlAuditEvents).toEqual([
+      expect.objectContaining({ type: 'task_control_requested' }),
+      expect.objectContaining({ type: 'task_control_dispatched' }),
+    ]);
   });
 
   it('clears store state and handles missing snapshot taskStates', () => {

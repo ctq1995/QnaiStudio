@@ -1,4 +1,5 @@
 import { registerAIEventTranscriptAutoWiring } from '../services/aiEventTranscriptAutoWiring'
+import { syncEngineeringTaskStateFromRuntime } from '../services/engineeringTaskStateRuntimeBridge'
 import {
   createEngineeringTaskRunner,
   getTaskManager,
@@ -15,6 +16,7 @@ import {
   type EngineeringTranscriptRecorder,
   type EngineeringRuntimeTranscriptAutoWiring,
   type EngineeringRuntimeTranscriptAutoWiringInput,
+  type EngineeringRuntimeTurnHook,
   type TaskManager,
 } from '../ai-runtime'
 
@@ -49,6 +51,7 @@ export interface EngineeringPipelineRunnerRegistrationInput extends EngineeringP
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  afterRuntimeTurn?: EngineeringRuntimeTurnHook
   mapTaskToRunInput?: EngineeringTaskInputMapper
 }
 
@@ -77,6 +80,7 @@ export function registerEngineeringPipelineRunner(input: EngineeringPipelineRunn
       transcriptRecorder: input.transcriptRecorder,
       transcriptAutoWiring: input.transcriptAutoWiring || registerDefaultAIEventTranscriptAutoWiring,
       taskStateTracker: input.taskStateTracker,
+      afterRuntimeTurn: input.afterRuntimeTurn || syncEngineeringTaskStateFromRuntime,
       mapTaskToRunInput: input.mapTaskToRunInput,
       pipelineDeps,
     },

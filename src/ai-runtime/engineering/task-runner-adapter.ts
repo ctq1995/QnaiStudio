@@ -1,6 +1,6 @@
 import type { AITask } from '../task'
 import type { EngineeringTaskRunner, EngineeringTaskRunnerResult } from '../task-manager'
-import { createEngineeringRuntime, type EngineeringRuntimeTranscriptAutoWiring, type EngineeringRuntimeTurnResult } from './engineering-runtime'
+import { createEngineeringRuntime, type EngineeringRuntime, type EngineeringRuntimeTranscriptAutoWiring, type EngineeringRuntimeTurnResult } from './engineering-runtime'
 import type { EngineeringExecutionPipelineDeps } from './execution-pipeline'
 import type { EngineeringLifecycleRuntime } from './lifecycle-runtime'
 import type { EngineeringPermissionMode } from './permission-policy'
@@ -10,6 +10,7 @@ import type { EngineeringTranscriptRecorder } from './transcript-recorder'
 import { createEngineeringTurnRunnerDepsFromPipelineDeps, type EngineeringTurnInput, type EngineeringTurnRunnerDeps } from './turn-runner'
 
 export type EngineeringTaskInputMapper = (task: AITask) => Omit<EngineeringTurnInput, 'sessionId'>
+export type EngineeringRuntimeTurnHook = (runtime: EngineeringRuntime) => void
 
 export interface EngineeringTaskRunnerAdapterInput {
   sessionId?: string | ((task: AITask) => string)
@@ -17,6 +18,7 @@ export interface EngineeringTaskRunnerAdapterInput {
   transcriptRecorder?: EngineeringTranscriptRecorder
   transcriptAutoWiring?: EngineeringRuntimeTranscriptAutoWiring
   taskStateTracker?: EngineeringTaskStateTracker
+  afterRuntimeTurn?: EngineeringRuntimeTurnHook
   pipelineDeps?: EngineeringExecutionPipelineDeps
   turnRunnerDeps?: EngineeringTurnRunnerDeps
   mapTaskToRunInput?: EngineeringTaskInputMapper
@@ -49,6 +51,7 @@ export function createEngineeringTaskRunner(input: EngineeringTaskRunnerAdapterI
         ...mapTaskToRunInput(task),
         taskId: task.id,
       })
+      runAfterRuntimeTurn(input.afterRuntimeTurn, runtime)
 
       if (signal.aborted) {
         return { success: false, error: 'Engineering task aborted' }
@@ -81,6 +84,15 @@ function resolveTurnRunnerDeps(input: EngineeringTaskRunnerAdapterInput): Engine
   if (input.turnRunnerDeps) return input.turnRunnerDeps
   if (input.pipelineDeps) return createEngineeringTurnRunnerDepsFromPipelineDeps(input.pipelineDeps)
   throw new Error('Engineering task runner requires either turnRunnerDeps or pipelineDeps')
+}
+
+function runAfterRuntimeTurn(hook: EngineeringRuntimeTurnHook | undefined, runtime: EngineeringRuntime): void {
+  if (!hook) return
+  try {
+    hook(runtime)
+  } catch {
+    // Post-run sync is observational and must not alter task results.
+  }
 }
 
 function resolveSessionId(sessionId: EngineeringTaskRunnerAdapterInput['sessionId'], task: AITask): string {

@@ -160,6 +160,39 @@ describe('engineeringTaskStateStore', () => {
     expect(useEngineeringTaskStateStore.getState().activeTaskId).toBeUndefined();
     expect(useEngineeringTaskStateStore.getState().filter).toEqual({});
   });
+
+  it('records navigation intent for allowed open_transcript and open_timeline actions', async () => {
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'open_transcript');
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastNavigationIntent).toEqual({
+      taskId: 'task-1',
+      target: 'transcript',
+      requestedAt: expect.any(String),
+    });
+
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'open_timeline');
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastNavigationIntent).toEqual({
+      taskId: 'task-1',
+      target: 'timeline',
+      requestedAt: expect.any(String),
+    });
+  });
+
+  it('clears navigation intent for non-navigation actions', async () => {
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'open_timeline');
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastNavigationIntent).toBeTruthy();
+
+    useEngineeringTaskStateStore.getState().dispatchTaskAction('task-1', 'pause');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useEngineeringTaskStateStore.getState().lastNavigationIntent).toBeUndefined();
+  });
 });
 
 function createTaskState(overrides: Partial<EngineeringTaskState>): EngineeringTaskState {

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { clsx } from 'clsx';
 import type { EngineeringTaskState } from '../../ai-runtime/engineering';
-import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult, type EngineeringTaskControlPermissionDecision, type EngineeringTaskControlRuntimeAckEvent, type EngineeringTaskStateFilter } from '../../stores';
+import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult, type EngineeringTaskControlPermissionDecision, type EngineeringTaskControlRuntimeAckEvent, type EngineeringTaskNavigationIntent, type EngineeringTaskStateFilter } from '../../stores';
 
 type ControlAuditEvent = EngineeringTaskControlPermissionDecision | EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
 
@@ -48,6 +48,7 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
   const lastControlAuditEvents = useEngineeringTaskStateStore((state) => state.lastControlAuditEvents);
   const lastControlRuntimeError = useEngineeringTaskStateStore((state) => state.lastControlRuntimeError);
   const lastControlTranscriptError = useEngineeringTaskStateStore((state) => state.lastControlTranscriptError);
+  const lastNavigationIntent = useEngineeringTaskStateStore((state) => state.lastNavigationIntent);
 
   const filteredTasks = getFilteredTaskStates();
   const activeTask = getActiveTask() || filteredTasks[0];
@@ -147,6 +148,7 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
                 controlAuditEvents={lastControlAuditEvents.filter((event) => event.taskId === activeTask.taskId)}
                 runtimeError={lastControlRuntimeError}
                 transcriptError={lastControlTranscriptError}
+                navigationIntent={lastNavigationIntent?.taskId === activeTask.taskId ? lastNavigationIntent : undefined}
                 onAction={dispatchTaskAction}
               />
             ) : (
@@ -166,6 +168,7 @@ function TaskDetail({
   controlAuditEvents,
   runtimeError,
   transcriptError,
+  navigationIntent,
   onAction,
 }: {
   task: EngineeringTaskState;
@@ -174,6 +177,7 @@ function TaskDetail({
   controlAuditEvents: ControlAuditEvent[];
   runtimeError?: string;
   transcriptError?: string;
+  navigationIntent?: EngineeringTaskNavigationIntent;
   onAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
 }) {
   return (
@@ -202,6 +206,7 @@ function TaskDetail({
         auditEvents={controlAuditEvents}
         runtimeError={runtimeError}
         transcriptError={transcriptError}
+        navigationIntent={navigationIntent}
       />
 
       <Section title="Skipped stages">
@@ -282,15 +287,17 @@ function ControlFeedback({
   auditEvents,
   runtimeError,
   transcriptError,
+  navigationIntent,
 }: {
   permissionDecision?: EngineeringTaskControlPermissionDecision;
   actionResult?: EngineeringTaskControlDispatchResult;
   auditEvents: ControlAuditEvent[];
   runtimeError?: string;
   transcriptError?: string;
+  navigationIntent?: EngineeringTaskNavigationIntent;
 }) {
   const recentEvents = auditEvents.slice(-5).reverse();
-  const hasFeedback = permissionDecision || actionResult || runtimeError || transcriptError || recentEvents.length > 0;
+  const hasFeedback = permissionDecision || actionResult || runtimeError || transcriptError || navigationIntent || recentEvents.length > 0;
 
   return (
     <Section title="Control feedback">
@@ -309,6 +316,13 @@ function ControlFeedback({
               ['reason', actionResult.reason],
               ['action', actionResult.action],
               ['handled', actionResult.handledAt],
+            ]} />
+          )}
+          {navigationIntent && (
+            <DetailGrid rows={[
+              ['navigation', 'pending'],
+              ['target', navigationIntent.target],
+              ['requested', navigationIntent.requestedAt],
             ]} />
           )}
           {runtimeError && <FeedbackError label="runtime" value={runtimeError} />}

@@ -9,6 +9,13 @@ import type { EngineeringTaskControlTranscriptBridge } from '../services/enginee
 type EngineeringTaskStateSnapshot = { taskStates?: EngineeringTaskState[] };
 
 export type EngineeringTaskCenterAction = 'pause' | 'resume' | 'cancel' | 'open_transcript' | 'open_timeline';
+export type EngineeringTaskNavigationTarget = 'transcript' | 'timeline';
+
+export interface EngineeringTaskNavigationIntent {
+  taskId: string;
+  target: EngineeringTaskNavigationTarget;
+  requestedAt: string;
+}
 
 export interface EngineeringTaskCenterActionRequest {
   taskId: string;
@@ -28,6 +35,7 @@ interface EngineeringTaskStateStore {
   lastControlPermissionDecision?: EngineeringTaskControlPermissionDecision;
   lastControlTranscriptError?: string;
   lastControlRuntimeError?: string;
+  lastNavigationIntent?: EngineeringTaskNavigationIntent;
   controlTranscriptBridge?: EngineeringTaskControlTranscriptBridge;
   controlRuntimeBridge?: EngineeringTaskControlRuntimeBridge;
   setTaskStates: (states: EngineeringTaskState[]) => void;
@@ -91,6 +99,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
         lastControlPermissionDecision: permissionDecision,
         lastControlTranscriptError: undefined,
         lastControlRuntimeError: undefined,
+        lastNavigationIntent: undefined,
       });
       recordControlAuditEvents(get().controlTranscriptBridge, [permissionDecision], set);
       return;
@@ -98,6 +107,9 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
     const dispatch = dispatchEngineeringTaskControlActionWithAudit(request);
     const events: EngineeringTaskControlStoreAuditEvent[] = [permissionDecision, ...dispatch.events];
+    const navigationIntent = (action === 'open_transcript' || action === 'open_timeline') && dispatch.result.status === 'accepted'
+      ? { taskId, target: action === 'open_transcript' ? 'transcript' as const : 'timeline' as const, requestedAt: request.requestedAt }
+      : undefined;
     set({
       lastActionRequest: request,
       lastActionResult: dispatch.result,
@@ -105,6 +117,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
       lastControlPermissionDecision: permissionDecision,
       lastControlTranscriptError: undefined,
       lastControlRuntimeError: undefined,
+      lastNavigationIntent: navigationIntent,
     });
     void acknowledgeRuntimeControl(get().controlRuntimeBridge, request, dispatch.events, get, set, permissionDecision);
   },
@@ -127,7 +140,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlPermissionDecision: undefined, lastControlTranscriptError: undefined, lastControlRuntimeError: undefined, controlTranscriptBridge: undefined, controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge() });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlPermissionDecision: undefined, lastControlTranscriptError: undefined, lastControlRuntimeError: undefined, lastNavigationIntent: undefined, controlTranscriptBridge: undefined, controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge() });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),

@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
 import { clsx } from 'clsx';
 import type { EngineeringTaskState } from '../../ai-runtime/engineering';
-import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskControlDispatchResult, type EngineeringTaskStateFilter } from '../../stores';
+import { useEngineeringTaskStateStore, type EngineeringTaskCenterAction, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult, type EngineeringTaskControlPermissionDecision, type EngineeringTaskControlRuntimeAckEvent, type EngineeringTaskStateFilter } from '../../stores';
+
+type ControlAuditEvent = EngineeringTaskControlPermissionDecision | EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
 
 interface TaskCenterPanelProps {
   className?: string;
@@ -42,6 +44,10 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
   const getActiveTask = useEngineeringTaskStateStore((state) => state.getActiveTask);
   const dispatchTaskAction = useEngineeringTaskStateStore((state) => state.dispatchTaskAction);
   const lastActionResult = useEngineeringTaskStateStore((state) => state.lastActionResult);
+  const lastControlPermissionDecision = useEngineeringTaskStateStore((state) => state.lastControlPermissionDecision);
+  const lastControlAuditEvents = useEngineeringTaskStateStore((state) => state.lastControlAuditEvents);
+  const lastControlRuntimeError = useEngineeringTaskStateStore((state) => state.lastControlRuntimeError);
+  const lastControlTranscriptError = useEngineeringTaskStateStore((state) => state.lastControlTranscriptError);
 
   const filteredTasks = getFilteredTaskStates();
   const activeTask = getActiveTask() || filteredTasks[0];
@@ -137,6 +143,10 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
               <TaskDetail
                 task={activeTask}
                 actionResult={lastActionResult?.taskId === activeTask.taskId ? lastActionResult : undefined}
+                permissionDecision={lastControlPermissionDecision?.taskId === activeTask.taskId ? lastControlPermissionDecision : undefined}
+                controlAuditEvents={lastControlAuditEvents.filter((event) => event.taskId === activeTask.taskId)}
+                runtimeError={lastControlRuntimeError}
+                transcriptError={lastControlTranscriptError}
                 onAction={dispatchTaskAction}
               />
             ) : (
@@ -152,10 +162,18 @@ export function TaskCenterPanel({ className = '', width }: TaskCenterPanelProps)
 function TaskDetail({
   task,
   actionResult,
+  permissionDecision,
+  controlAuditEvents,
+  runtimeError,
+  transcriptError,
   onAction,
 }: {
   task: EngineeringTaskState;
   actionResult?: EngineeringTaskControlDispatchResult;
+  permissionDecision?: EngineeringTaskControlPermissionDecision;
+  controlAuditEvents: ControlAuditEvent[];
+  runtimeError?: string;
+  transcriptError?: string;
   onAction: (taskId: string, action: EngineeringTaskCenterAction) => void;
 }) {
   return (
@@ -178,16 +196,13 @@ function TaskDetail({
 
       <TaskActions task={task} onAction={onAction} />
 
-      {actionResult && (
-        <Section title="Last action result">
-          <DetailGrid rows={[
-            ['action', actionResult.action],
-            ['status', actionResult.status],
-            ['reason', actionResult.reason],
-            ['handled', actionResult.handledAt],
-          ]} />
-        </Section>
-      )}
+      <ControlFeedback
+        permissionDecision={permissionDecision}
+        actionResult={actionResult}
+        auditEvents={controlAuditEvents}
+        runtimeError={runtimeError}
+        transcriptError={transcriptError}
+      />
 
       <Section title="Skipped stages">
         {task.skippedStages.length > 0 ? (
@@ -259,6 +274,92 @@ function TaskActions({
       </div>
     </Section>
   );
+}
+
+function ControlFeedback({
+  permissionDecision,
+  actionResult,
+  auditEvents,
+  runtimeError,
+  transcriptError,
+}: {
+  permissionDecision?: EngineeringTaskControlPermissionDecision;
+  actionResult?: EngineeringTaskControlDispatchResult;
+  auditEvents: ControlAuditEvent[];
+  runtimeError?: string;
+  transcriptError?: string;
+}) {
+  const recentEvents = auditEvents.slice(-5).reverse();
+  const hasFeedback = permissionDecision || actionResult || runtimeError || transcriptError || recentEvents.length > 0;
+
+  return (
+    <Section title="Control feedback">
+      {hasFeedback ? (
+        <div className="space-y-1">
+          {permissionDecision && (
+            <DetailGrid rows={[
+              ['permission', permissionDecision.status],
+              ['reason', permissionDecision.reason],
+              ['action', permissionDecision.action],
+            ]} />
+          )}
+          {actionResult && (
+            <DetailGrid rows={[
+              ['result', actionResult.status],
+              ['reason', actionResult.reason],
+              ['action', actionResult.action],
+              ['handled', actionResult.handledAt],
+            ]} />
+          )}
+          {runtimeError && <FeedbackError label="runtime" value={runtimeError} />}
+          {transcriptError && <FeedbackError label="transcript" value={transcriptError} />}
+          {recentEvents.length > 0 && (
+            <div className="space-y-1 pt-1">
+              {recentEvents.map((event, index) => (
+                <div key={`${event.type}-${event.taskId}-${index}`} className="rounded-md bg-background-surface px-2 py-1">
+                  <div className="text-text-secondary">{formatControlEventTitle(event)}</div>
+                  <div className="mt-0.5 truncate text-text-tertiary">{formatControlEventSummary(event)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <span className="text-text-tertiary">暂无控制反馈</span>
+      )}
+    </Section>
+  );
+}
+
+function FeedbackError({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-300">
+      <span className="font-medium">{label}</span>: {value}
+    </div>
+  );
+}
+
+function formatControlEventTitle(event: ControlAuditEvent): string {
+  switch (event.type) {
+    case 'task_control_permission_decision':
+      return 'Permission decision';
+    case 'task_control_requested':
+      return 'Control requested';
+    case 'task_control_dispatched':
+      return 'Control dispatched';
+    case 'task_control_runtime_ack':
+      return 'Runtime ack';
+  }
+}
+
+function formatControlEventSummary(event: ControlAuditEvent): string {
+  if (event.type === 'task_control_requested') {
+    return `action=${event.action} requested=${event.requestedAt}`;
+  }
+  if (event.type === 'task_control_runtime_ack') {
+    return `action=${event.action} status=${event.status} reason=${event.reason}`;
+  }
+  return `action=${event.action} status=${event.status} reason=${event.reason}`;
 }
 
 function canPause(status: EngineeringTaskState['status']): boolean {

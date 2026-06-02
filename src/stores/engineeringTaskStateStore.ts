@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { EngineeringTaskState } from '../ai-runtime/engineering';
 import { engineeringTaskStateService, filterTaskStates, type EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
+import { decideEngineeringTaskControlPermission, type EngineeringTaskControlPermissionDecision } from '../services/engineeringTaskControlPermissionPolicy';
 import { dispatchEngineeringTaskControlActionWithAudit, type EngineeringTaskControlAuditEvent, type EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
 import { createNoopEngineeringTaskControlRuntimeBridge, isRuntimeAction, type EngineeringTaskControlRuntimeAckEvent, type EngineeringTaskControlRuntimeBridge } from '../services/engineeringTaskControlRuntimeBridge';
 import type { EngineeringTaskControlTranscriptBridge } from '../services/engineeringTaskControlTranscriptBridge';
@@ -15,7 +16,7 @@ export interface EngineeringTaskCenterActionRequest {
   requestedAt: string;
 }
 
-type EngineeringTaskControlStoreAuditEvent = EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
+type EngineeringTaskControlStoreAuditEvent = EngineeringTaskControlPermissionDecision | EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
 
 interface EngineeringTaskStateStore {
   taskStates: EngineeringTaskState[];
@@ -24,6 +25,7 @@ interface EngineeringTaskStateStore {
   lastActionRequest?: EngineeringTaskCenterActionRequest;
   lastActionResult?: EngineeringTaskControlDispatchResult;
   lastControlAuditEvents: EngineeringTaskControlStoreAuditEvent[];
+  lastControlPermissionDecision?: EngineeringTaskControlPermissionDecision;
   lastControlTranscriptError?: string;
   lastControlRuntimeError?: string;
   controlTranscriptBridge?: EngineeringTaskControlTranscriptBridge;
@@ -80,15 +82,31 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
       action,
       requestedAt: new Date().toISOString(),
     };
+    const permissionDecision = decideEngineeringTaskControlPermission(request);
+    if (permissionDecision.status !== 'allowed') {
+      set({
+        lastActionRequest: request,
+        lastActionResult: undefined,
+        lastControlAuditEvents: [permissionDecision],
+        lastControlPermissionDecision: permissionDecision,
+        lastControlTranscriptError: undefined,
+        lastControlRuntimeError: undefined,
+      });
+      recordControlAuditEvents(get().controlTranscriptBridge, [permissionDecision], set);
+      return;
+    }
+
     const dispatch = dispatchEngineeringTaskControlActionWithAudit(request);
+    const events: EngineeringTaskControlStoreAuditEvent[] = [permissionDecision, ...dispatch.events];
     set({
       lastActionRequest: request,
       lastActionResult: dispatch.result,
-      lastControlAuditEvents: dispatch.events,
+      lastControlAuditEvents: events,
+      lastControlPermissionDecision: permissionDecision,
       lastControlTranscriptError: undefined,
       lastControlRuntimeError: undefined,
     });
-    void acknowledgeRuntimeControl(get().controlRuntimeBridge, request, dispatch.events, get, set);
+    void acknowledgeRuntimeControl(get().controlRuntimeBridge, request, dispatch.events, get, set, permissionDecision);
   },
 
   setControlTranscriptBridge: (bridge) => {
@@ -109,7 +127,7 @@ export const useEngineeringTaskStateStore = create<EngineeringTaskStateStore>((s
 
   clear: () => {
     engineeringTaskStateService.clear();
-    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlTranscriptError: undefined, lastControlRuntimeError: undefined, controlTranscriptBridge: undefined, controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge() });
+    set({ taskStates: [], activeTaskId: undefined, filter: {}, lastActionRequest: undefined, lastActionResult: undefined, lastControlAuditEvents: [], lastControlPermissionDecision: undefined, lastControlTranscriptError: undefined, lastControlRuntimeError: undefined, controlTranscriptBridge: undefined, controlRuntimeBridge: createNoopEngineeringTaskControlRuntimeBridge() });
   },
 
   getFilteredTaskStates: () => filterTaskStates(get().taskStates, get().filter),
@@ -134,15 +152,17 @@ async function acknowledgeRuntimeControl(
   events: EngineeringTaskControlAuditEvent[],
   get: () => EngineeringTaskStateStore,
   set: (state: Partial<EngineeringTaskStateStore>) => void,
+  permissionDecision?: EngineeringTaskControlPermissionDecision,
 ): Promise<void> {
+  const baseEvents: EngineeringTaskControlStoreAuditEvent[] = permissionDecision ? [permissionDecision, ...events] : events;
   if (!bridge || !isRuntimeAction(request.action)) {
-    recordControlAuditEvents(get().controlTranscriptBridge, events, set);
+    recordControlAuditEvents(get().controlTranscriptBridge, baseEvents, set);
     return;
   }
 
   try {
     const ack = await bridge.acknowledge(request);
-    const nextEvents: EngineeringTaskControlStoreAuditEvent[] = ack ? [...events, ack] : events;
+    const nextEvents: EngineeringTaskControlStoreAuditEvent[] = ack ? [...baseEvents, ack] : baseEvents;
     set({
       lastControlAuditEvents: nextEvents,
       lastControlRuntimeError: undefined,
@@ -150,7 +170,7 @@ async function acknowledgeRuntimeControl(
     recordControlAuditEvents(get().controlTranscriptBridge, nextEvents, set);
   } catch (error: unknown) {
     set({ lastControlRuntimeError: stringifyError(error) });
-    recordControlAuditEvents(get().controlTranscriptBridge, events, set);
+    recordControlAuditEvents(get().controlTranscriptBridge, baseEvents, set);
   }
 }
 
@@ -163,4 +183,5 @@ function stringifyError(error: unknown): string {
 export { engineeringTaskStateService } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskStateFilter } from '../services/engineeringTaskStateService';
 export type { EngineeringTaskControlAuditEvent, EngineeringTaskControlDispatchResult } from '../services/engineeringTaskControlDispatcher';
+export type { EngineeringTaskControlPermissionDecision } from '../services/engineeringTaskControlPermissionPolicy';
 export type { EngineeringTaskControlRuntimeAckEvent, EngineeringTaskControlRuntimeBridge } from '../services/engineeringTaskControlRuntimeBridge';

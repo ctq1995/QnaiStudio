@@ -20,6 +20,7 @@ export type EngineeringTranscriptEventType =
   | 'task_control_requested'
   | 'task_control_dispatched'
   | 'task_control_runtime_ack'
+  | 'task_control_permission_decision'
   | 'note'
 
 export interface EngineeringTranscriptEvent<TPayload = unknown> {

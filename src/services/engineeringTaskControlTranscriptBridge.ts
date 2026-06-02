@@ -1,9 +1,10 @@
 import type { EngineeringTranscriptEvent } from '../ai-runtime/engineering/transcript-recorder';
 import type { EngineeringTranscriptRecorder } from '../ai-runtime/engineering/transcript-recorder';
 import type { EngineeringTaskControlAuditEvent } from './engineeringTaskControlDispatcher';
+import type { EngineeringTaskControlPermissionDecision } from './engineeringTaskControlPermissionPolicy';
 import type { EngineeringTaskControlRuntimeAckEvent } from './engineeringTaskControlRuntimeBridge';
 
-export type EngineeringTaskControlTranscriptEvent = EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
+export type EngineeringTaskControlTranscriptEvent = EngineeringTaskControlPermissionDecision | EngineeringTaskControlAuditEvent | EngineeringTaskControlRuntimeAckEvent;
 
 export interface EngineeringTaskControlTranscriptContext {
   sessionId?: string;

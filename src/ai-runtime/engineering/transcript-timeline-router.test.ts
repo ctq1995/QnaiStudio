@@ -65,8 +65,25 @@ describe('transcript timeline route decisions', () => {
           },
         },
         {
-          id: 'control-requested-1',
+          id: 'control-permission-1',
           sequence: 5,
+          type: 'task_control_permission_decision',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          taskId: 'task-1',
+          createdAt: '2026-01-01T00:00:04.000Z',
+          payload: {
+            taskId: 'task-1',
+            action: 'pause',
+            status: 'allowed',
+            reason: 'policy_allowed',
+            requestedAt: '2026-01-01T00:00:04.000Z',
+            decidedAt: '2026-01-01T00:00:04.500Z',
+          },
+        },
+        {
+          id: 'control-requested-1',
+          sequence: 6,
           type: 'task_control_requested',
           sessionId: 'session-1',
           turnId: 'turn-1',
@@ -74,13 +91,13 @@ describe('transcript timeline route decisions', () => {
           createdAt: '2026-01-01T00:00:04.000Z',
           payload: {
             taskId: 'task-1',
-            action: 'cancel',
+            action: 'pause',
             requestedAt: '2026-01-01T00:00:04.000Z',
           },
         },
         {
           id: 'control-dispatched-1',
-          sequence: 6,
+          sequence: 7,
           type: 'task_control_dispatched',
           sessionId: 'session-1',
           turnId: 'turn-1',
@@ -88,7 +105,7 @@ describe('transcript timeline route decisions', () => {
           createdAt: '2026-01-01T00:00:05.000Z',
           payload: {
             taskId: 'task-1',
-            action: 'cancel',
+            action: 'pause',
             status: 'accepted',
             reason: 'noop_control_handler',
             requestedAt: '2026-01-01T00:00:04.000Z',
@@ -97,7 +114,7 @@ describe('transcript timeline route decisions', () => {
         },
         {
           id: 'control-runtime-ack-1',
-          sequence: 7,
+          sequence: 8,
           type: 'task_control_runtime_ack',
           sessionId: 'session-1',
           turnId: 'turn-1',
@@ -105,7 +122,7 @@ describe('transcript timeline route decisions', () => {
           createdAt: '2026-01-01T00:00:06.000Z',
           payload: {
             taskId: 'task-1',
-            action: 'cancel',
+            action: 'pause',
             status: 'acknowledged',
             reason: 'noop_runtime_handler',
             requestedAt: '2026-01-01T00:00:04.000Z',
@@ -117,7 +134,7 @@ describe('transcript timeline route decisions', () => {
 
     const timeline = buildEngineeringTranscriptTimeline(snapshot)
 
-    expect(timeline.items).toHaveLength(7)
+    expect(timeline.items).toHaveLength(8)
     expect(timeline.items[0]).toEqual(expect.objectContaining({
       kind: 'route',
       title: 'Route decided',
@@ -135,18 +152,23 @@ describe('transcript timeline route decisions', () => {
     }))
     expect(timeline.items[4]).toEqual(expect.objectContaining({
       kind: 'control',
-      title: 'Task control requested',
-      summary: 'action=cancel requestedAt=2026-01-01T00:00:04.000Z',
+      title: 'Task control permission decision',
+      summary: 'action=pause status=allowed reason=policy_allowed',
     }))
     expect(timeline.items[5]).toEqual(expect.objectContaining({
       kind: 'control',
-      title: 'Task control dispatched',
-      summary: 'action=cancel status=accepted reason=noop_control_handler',
+      title: 'Task control requested',
+      summary: 'action=pause requestedAt=2026-01-01T00:00:04.000Z',
     }))
     expect(timeline.items[6]).toEqual(expect.objectContaining({
       kind: 'control',
+      title: 'Task control dispatched',
+      summary: 'action=pause status=accepted reason=noop_control_handler',
+    }))
+    expect(timeline.items[7]).toEqual(expect.objectContaining({
+      kind: 'control',
       title: 'Task control runtime ack',
-      summary: 'action=cancel status=acknowledged reason=noop_runtime_handler',
+      summary: 'action=pause status=acknowledged reason=noop_runtime_handler',
     }))
   })
 })
